@@ -1,0 +1,15 @@
+{
+  "task_id": "task_c47f6595",
+  "question_text": "什么是递归",
+  "round_index": 1,
+  "current_phase": "insight",
+  "agent_outputs": [],
+  "conflicts_detected": [],
+  "complementary_points": [],
+  "summary_prompt": "",
+  "student_response": "递归是指在定义或解决问题时，直接或间接地引用自身的过程或方法。",
+  "student_confidence": 0.95,
+  "round_history": [],
+  "created_at": "2025-12-23T10:46:09.349308",
+  "updated_at": "2025-12-23T10:46:13.163493"
+}

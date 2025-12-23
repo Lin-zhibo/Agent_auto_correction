@@ -1,0 +1,29 @@
+{
+  "authority_agent_001": {
+    "agent_id": "authority_agent_001",
+    "agent_type": "authority",
+    "accuracy": 0.3333333333333333,
+    "confidence_variance": 0.0,
+    "total_tasks": 3,
+    "successful_tasks": 1,
+    "last_updated": "2025-12-23T17:34:00.062222"
+  },
+  "questioner_agent_001": {
+    "agent_id": "questioner_agent_001",
+    "agent_type": "questioner",
+    "accuracy": 0.3333333333333333,
+    "confidence_variance": 0.0,
+    "total_tasks": 3,
+    "successful_tasks": 1,
+    "last_updated": "2025-12-23T17:34:00.063268"
+  },
+  "logic_analyst_agent_001": {
+    "agent_id": "logic_analyst_agent_001",
+    "agent_type": "logic_analyst",
+    "accuracy": 0.3333333333333333,
+    "confidence_variance": 0.0,
+    "total_tasks": 3,
+    "successful_tasks": 1,
+    "last_updated": "2025-12-23T17:34:00.065044"
+  }
+}
