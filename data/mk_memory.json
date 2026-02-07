@@ -1,0 +1,251 @@
+{
+  "question_types": {
+    "数学类": {
+      "description": "数学、计算、逻辑等相关问题（与 LTM 顶层分类一致）",
+      "strategy": {
+        "similarity_threshold": 0.9,
+        "improvement_min": 0.05,
+        "max_loops": 5
+      },
+      "agent_priorities": {
+        "math_expert": 1.0,
+        "logic_analyzer": 1.0,
+        "questioner": 1.0,
+        "explainer": 0.75,
+        "authority_checker": 0.7,
+        "economics_expert": 0.5,
+        "philosophy_expert": 0.5,
+        "science_expert": 0.5700000000000001,
+        "critic": 0.62,
+        "supporter": 0.55,
+        "clarity_checker": 0.55,
+        "completeness_checker": 0.62,
+        "evidence_checker": 0.6200000000000001,
+        "brevity_advisor": 0.55,
+        "audience_advisor": 0.55
+      },
+      "thresholds": {
+        "confidence_low": 0.6,
+        "consistency_low": 0.7,
+        "confidence_high": 0.8,
+        "consistency_high": 0.8
+      },
+      "agent_effectiveness": {
+        "questioner": 1.0,
+        "logic_analyzer": 0.9600000000000002,
+        "authority_checker": 0.82,
+        "explainer": 0.85,
+        "economics_expert": 0.72,
+        "math_expert": 0.9700000000000001,
+        "philosophy_expert": 0.73,
+        "science_expert": 0.78,
+        "critic": 0.76,
+        "supporter": 0.78,
+        "clarity_checker": 0.76,
+        "completeness_checker": 0.79,
+        "evidence_checker": 0.8200000000000001,
+        "brevity_advisor": 0.77,
+        "audience_advisor": 0.76
+      }
+    },
+    "哲学类": {
+      "description": "哲学、社会学等相关问题（与 LTM 顶层分类一致）",
+      "strategy": {
+        "similarity_threshold": 0.88,
+        "improvement_min": 0.06,
+        "max_loops": 4
+      },
+      "agent_priorities": {
+        "philosophy_expert": 0.95,
+        "questioner": 0.85,
+        "logic_analyzer": 0.8,
+        "explainer": 0.75,
+        "authority_checker": 0.7,
+        "economics_expert": 0.5,
+        "math_expert": 0.5,
+        "science_expert": 0.55,
+        "critic": 0.6,
+        "supporter": 0.55,
+        "clarity_checker": 0.6,
+        "completeness_checker": 0.6,
+        "evidence_checker": 0.55,
+        "brevity_advisor": 0.5,
+        "audience_advisor": 0.55
+      },
+      "thresholds": {
+        "confidence_low": 0.55,
+        "consistency_low": 0.65,
+        "confidence_high": 0.82,
+        "consistency_high": 0.82
+      },
+      "agent_effectiveness": {
+        "questioner": 0.85,
+        "logic_analyzer": 0.8,
+        "authority_checker": 0.8,
+        "explainer": 0.82,
+        "economics_expert": 0.72,
+        "math_expert": 0.75,
+        "philosophy_expert": 0.88,
+        "science_expert": 0.78,
+        "critic": 0.76,
+        "supporter": 0.78,
+        "clarity_checker": 0.75,
+        "completeness_checker": 0.78,
+        "evidence_checker": 0.76,
+        "brevity_advisor": 0.72,
+        "audience_advisor": 0.75
+      }
+    },
+    "技术类": {
+      "description": "技术、机器学习、深度学习等相关问题（与 LTM 顶层分类一致）",
+      "strategy": {
+        "similarity_threshold": 0.88,
+        "improvement_min": 0.06,
+        "max_loops": 4
+      },
+      "agent_priorities": {
+        "science_expert": 0.9,
+        "logic_analyzer": 0.88,
+        "questioner": 0.87,
+        "explainer": 0.81,
+        "authority_checker": 0.75,
+        "economics_expert": 0.5,
+        "math_expert": 0.6,
+        "philosophy_expert": 0.5,
+        "critic": 0.6,
+        "supporter": 0.55,
+        "clarity_checker": 0.55,
+        "completeness_checker": 0.6,
+        "evidence_checker": 0.55,
+        "brevity_advisor": 0.5,
+        "audience_advisor": 0.55
+      },
+      "thresholds": {
+        "confidence_low": 0.55,
+        "consistency_low": 0.65,
+        "confidence_high": 0.82,
+        "consistency_high": 0.82
+      },
+      "agent_effectiveness": {
+        "questioner": 0.9,
+        "logic_analyzer": 0.85,
+        "authority_checker": 0.8,
+        "explainer": 0.87,
+        "economics_expert": 0.72,
+        "math_expert": 0.78,
+        "philosophy_expert": 0.73,
+        "science_expert": 0.86,
+        "critic": 0.76,
+        "supporter": 0.78,
+        "clarity_checker": 0.75,
+        "completeness_checker": 0.78,
+        "evidence_checker": 0.76,
+        "brevity_advisor": 0.72,
+        "audience_advisor": 0.75
+      }
+    },
+    "general": {
+      "description": "通用或无法归入上述领域的问题（与 LTM 默认一致）",
+      "strategy": {
+        "similarity_threshold": 0.9,
+        "improvement_min": 0.05,
+        "max_loops": 3
+      },
+      "agent_priorities": {
+        "questioner": 1.0,
+        "logic_analyzer": 0.9500000000000002,
+        "authority_checker": 0.79,
+        "explainer": 0.7000000000000001,
+        "economics_expert": 0.52,
+        "math_expert": 0.5,
+        "philosophy_expert": 0.5,
+        "science_expert": 0.5,
+        "critic": 0.55,
+        "supporter": 0.5700000000000001,
+        "clarity_checker": 0.6000000000000001,
+        "completeness_checker": 0.55,
+        "evidence_checker": 0.6000000000000001,
+        "brevity_advisor": 0.5,
+        "audience_advisor": 0.55
+      },
+      "thresholds": {
+        "confidence_low": 0.6,
+        "consistency_low": 0.7,
+        "confidence_high": 0.8,
+        "consistency_high": 0.8
+      },
+      "agent_effectiveness": {
+        "questioner": 1.0,
+        "logic_analyzer": 0.9300000000000002,
+        "authority_checker": 0.91,
+        "explainer": 0.9500000000000001,
+        "economics_expert": 0.74,
+        "math_expert": 0.75,
+        "philosophy_expert": 0.73,
+        "science_expert": 0.76,
+        "critic": 0.74,
+        "supporter": 0.8,
+        "clarity_checker": 0.81,
+        "completeness_checker": 0.77,
+        "evidence_checker": 0.8,
+        "brevity_advisor": 0.72,
+        "audience_advisor": 0.76
+      }
+    },
+    "what_is": {
+      "description": "由 LTM 自动衍生（来自 6 条记录）",
+      "strategy": {
+        "similarity_threshold": 0.9,
+        "improvement_min": 0.05,
+        "max_loops": 3
+      },
+      "agent_priorities": {
+        "questioner": 0.93,
+        "logic_analyzer": 0.8600000000000001,
+        "authority_checker": 0.76,
+        "explainer": 0.63,
+        "economics_expert": 0.5,
+        "math_expert": 0.5,
+        "philosophy_expert": 0.5,
+        "science_expert": 0.5,
+        "critic": 0.55,
+        "supporter": 0.55,
+        "clarity_checker": 0.5700000000000001,
+        "completeness_checker": 0.55,
+        "evidence_checker": 0.5700000000000001,
+        "brevity_advisor": 0.5,
+        "audience_advisor": 0.55
+      },
+      "thresholds": {
+        "confidence_low": 0.6,
+        "consistency_low": 0.7,
+        "confidence_high": 0.8,
+        "consistency_high": 0.8
+      },
+      "agent_effectiveness": {
+        "questioner": 0.9,
+        "logic_analyzer": 0.8400000000000001,
+        "authority_checker": 0.88,
+        "explainer": 0.88,
+        "economics_expert": 0.72,
+        "math_expert": 0.75,
+        "philosophy_expert": 0.73,
+        "science_expert": 0.76,
+        "critic": 0.74,
+        "supporter": 0.78,
+        "clarity_checker": 0.78,
+        "completeness_checker": 0.77,
+        "evidence_checker": 0.77,
+        "brevity_advisor": 0.72,
+        "audience_advisor": 0.76
+      }
+    }
+  },
+  "default_type": "general",
+  "last_update": "2026-02-04",
+  "type_counts": {
+    "what_is": 7,
+    "数学类": 5,
+    "general": 5
+  }
+}
