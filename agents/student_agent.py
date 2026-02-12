@@ -75,17 +75,28 @@ class StudentAgent:
             f"- {k}: {v.get('description', k)}" for k, v in types.items()
         ) if types else "- general: 通用问题"
         prompt = '''
-以下是从长期记忆中检索到的相关知识：
+The following is the relevant knowledge retrieved from long-term memory:
+
 {retrieved_knowledge}
-请严格基于上述知识回答问题。若知识中未涵盖，请如实回答即可，不必再参考上述知识。
-只输出你的答案正文，不要输出「根据以上知识…」等前缀或多余解释。
-问题：{question}
-请输出的格式严格按照下面（只输出该 JSON，不要其他文字）：
+
+Please answer the question strictly based on the above knowledge. If the knowledge does not cover the question, answer truthfully using your own capabilities, without needing to reference the above knowledge.
+
+Only output the main body of your answer, without prefixes like "Based on the above knowledge..." or any extra explanations.
+
+Question: {question}
+
+Please output in the format strictly as below (only output this JSON, no other text):
+
 {{
-    "answer": "问题的答案",
-    "question_type": "问题类型"
+
+    "answer": "The answer to the question",
+
+    "question_type": "Question type"
+
 }}
-其中 question_type 必须从下面选一个最贴切的：
+
+Where question_type must be selected as the most appropriate one from below:
+
 {type_descriptions}
 
 '''.format(retrieved_knowledge=retrieved_knowledge, question=question, type_descriptions=type_descriptions)
@@ -157,6 +168,10 @@ FINAL ACTION (what you must output now):
 
 * Produce the rewritten/optimized answer **only** in the required JSON format above.
 * Do not include any additional commentary, analysis, or metadata outside the JSON.
+
+---
+
+**If you believe your previous answer '{current_answer}' was correct, it is permissible to maintain your opinion.**
 
 '''.format(question=question, current_answer=current_answer, organized_feedback=organized_feedback)
         logger.info("Student revise_answer 输入指导长度=%s 字", len(organized_feedback or ""))
