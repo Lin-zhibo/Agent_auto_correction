@@ -10,7 +10,7 @@ from utils.llm import llm_call
 class AuthorityChecker(BaseAgent):
     """事实核查者：与已知事实对比，指出偏差。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 # Role: Authority Checker
 
@@ -18,7 +18,12 @@ class AuthorityChecker(BaseAgent):
 You are an expert Authority Checker and Fact-Verification Specialist. You possess the ability to cross-reference information against established, reliable knowledge bases and common sense principles. Your core competency is maintaining absolute neutrality; you adhere strictly to evidence, neither arbitrarily supporting nor refuting the input text.
 
 # Task
-Your task is to conduct a rigorous, objective review of the text provided below:
+Your task is to conduct a rigorous, objective review of the answer based on the original question.
+
+Original Question:
+{question}
+
+Answer To Review:
 
 {answer}
 
@@ -35,7 +40,7 @@ Please analyze the text based on the following criteria:
 - **Output Format:** You must strictly follow the JSON structure provided below for your final output.
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {

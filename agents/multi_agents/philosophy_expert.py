@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class PhilosophyExpert(BaseAgent):
     """哲学专家：检查概念界定、前提假设、论证结构及哲学意涵。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“哲学专家（Philosophy Expert）”。请从哲学与概念分析角度审视以下回答：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请审查：
@@ -21,7 +25,7 @@ class PhilosophyExpert(BaseAgent):
 3. 提出澄清或深化哲学意涵的建议，使论述更具思想深度。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.78)
         return {

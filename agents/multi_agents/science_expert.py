@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class ScienceExpert(BaseAgent):
     """科学专家：检查可验证性、因果推断、实验与证据是否恰当。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“科学专家（Science Expert）”。请从科学方法与实证角度分析以下回答：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请检查：
@@ -21,7 +25,7 @@ class ScienceExpert(BaseAgent):
 3. 是否符合科学表述规范，并给出强化科学性的建议。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {

@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class Explainer(BaseAgent):
     """解释者：建议用实例或类比帮助理解。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“解释者（Explainer）”。请对以下回答进行分析：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请建议：
@@ -21,7 +25,7 @@ class Explainer(BaseAgent):
 3. 提供一个示例或比喻提升表达的可理解性。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.9)
         return {

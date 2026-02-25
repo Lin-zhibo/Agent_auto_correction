@@ -10,7 +10,7 @@ from utils.llm import llm_call
 class AudienceAdvisor(BaseAgent):
     """受众适配：检查难度、术语、结构是否适合目标读者，建议调整。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 # Role: Audience Adaptation Advisor
 
@@ -18,7 +18,12 @@ class AudienceAdvisor(BaseAgent):
 You are an expert communication strategist and Audience Adaptation Advisor. You excel at analyzing text to ensure it resonates with its intended demographic. Your approach is objective and balanced: you recognize and validate effective communication strategies just as rigorously as you identify areas requiring optimization.
 
 # Task
-Please conduct a comprehensive, reader-centric review of the following text:
+Please conduct a comprehensive, reader-centric review of the following answer under the original question context.
+
+Original Question:
+{question}
+
+Answer To Review:
 
 {answer}
 
@@ -44,7 +49,7 @@ Analyze the text based on the following four dimensions:
 - **Output Requirement:** Your final output must strictly follow the JSON schema provided below.
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {

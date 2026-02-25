@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class EvidenceChecker(BaseAgent):
     """证据与引用检查：指出缺乏证据的断言、引用不当或需补充来源之处。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“证据与引用核查顾问（Evidence Checker）”。请对以下回答进行严格审查：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请分析：
@@ -21,7 +25,7 @@ class EvidenceChecker(BaseAgent):
 3. 请建议如何补充权威来源或加强证据支撑。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.78)
         return {

@@ -350,7 +350,35 @@ def update_ltm(
         parent[leaf_key]["question_type"] = qt
         logger.info("LTM 更新节点 路径: %s", topic_path)
 
+    # 同步更新知识库 ltmk.json（供 Chroma RAG 使用）
+    _sync_to_ltmk(question, answer)
+
     return qt
+
+
+def _sync_to_ltmk(question: str, answer: str) -> None:
+    """将新问答同步到 ltmk.json 知识库（供 Chroma RAG 使用）。"""
+    from config import LTMK_PATH
+    
+    content = f"Question: {question}\nAnswer: {answer}"
+    
+    # 加载现有知识库
+    knowledge = []
+    if LTMK_PATH.exists():
+        try:
+            with open(LTMK_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            knowledge = data.get("knowledge", [])
+        except Exception as e:
+            logger.warning("加载 ltmk.json 失败: %s", e)
+    
+    # 避免重复添加
+    if content not in knowledge:
+        knowledge.append(content)
+        LTMK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LTMK_PATH, "w", encoding="utf-8") as f:
+            json.dump({"knowledge": knowledge}, f, ensure_ascii=False, indent=2)
+        logger.info("同步新知识到 ltmk.json，当前共 %d 条", len(knowledge))
 
 
 def get_all_concepts(ltm: dict[str, Any]) -> list[dict[str, Any]]:

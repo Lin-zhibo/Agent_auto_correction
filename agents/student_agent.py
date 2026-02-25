@@ -60,11 +60,12 @@ class StudentAgent:
     def answer(self, question: str, ltm: dict[str, Any], mk: dict[str, Any]) -> tuple[str, str]:
         """
         按步骤生成初答：
-        1. 在 LTM 的 RAG 中按问题逐层检索（RAG 内部由 LLM 根据问题选节点，不依赖问题类型）
-        2. 根据检索到的 LTM 信息进行回答
+        1. 在 RAG 中按问题检索相关知识（使用 Chroma 向量检索或传统树形检索）
+        2. 根据检索到的知识信息进行回答
         返回 (答案, 问题类型)；问题类型由 LLM 在作答时一并输出（须为 MK 中类型之一），供主流程选 Agent 与策略。
         """
-        # Step 1: 在 LTM 的 RAG 中按问题检索（传入问题，LTM 内部 LLM 逐层选节点）
+        # Step 1: 在 RAG 中按问题检索（支持 Chroma 向量检索或传统树形检索）
+        # 传入 ltm 参数保持向后兼容，ChromaRAGSearch 会忽略该参数
         retrieved_knowledge = self.rag_search.search(question, ltm)
         logger.info("Student RAG 检索完成，检索内容长度=%s 字", len(retrieved_knowledge or ""))
         logger.info("Student RAG 检索内容(全文): %s", retrieved_knowledge)
@@ -75,18 +76,35 @@ class StudentAgent:
             f"- {k}: {v.get('description', k)}" for k, v in types.items()
         ) if types else "- general: 通用问题"
         prompt = '''
-以下是从长期记忆中检索到的相关知识：
+You are a precise, faithful, and concise knowledge-grounded answering agent.
+
+You are given:
+• Retrieved long-term memory knowledge (may be empty, partial, noisy or irrelevant):
 {retrieved_knowledge}
-请严格基于上述知识回答问题。若知识中未涵盖，请如实回答即可，不必再参考上述知识。
-只输出你的答案正文，不要输出「根据以上知识…」等前缀或多余解释。
-问题：{question}
-请输出的格式严格按照下面（只输出该 JSON，不要其他文字）：
-{{
-    "answer": "问题的答案",
-    "question_type": "问题类型"
-}}
-其中 question_type 必须从下面选一个最贴切的：
+
+• The user's current question:
+{question}
+
+• The complete list of allowed question types with their descriptions:
 {type_descriptions}
+
+Your strict rules:
+
+1. Answer **exclusively** using information explicitly present or strongly implied in the {retrieved_knowledge} block.
+2. If the retrieved knowledge does not contain information sufficient to answer the question reliably → output a brief, honest statement that the knowledge is insufficient / not covered.
+3. Do NOT add external knowledge, speculation, common sense assumptions, internet knowledge, or reasoning not grounded in the provided {retrieved_knowledge}.
+4. Do NOT explain your reasoning process, do NOT say "according to the knowledge", do NOT add disclaimers outside the answer field unless the knowledge is clearly insufficient.
+5. Be maximally concise while remaining accurate and complete with respect to what is actually in the retrieved knowledge.
+6. Classify the question into **exactly one** of the provided question types from {type_descriptions}. Choose the single most appropriate type. Do not invent new types.
+
+Output **only** a valid JSON object with exactly these two keys — nothing else (no preamble, no explanation, no markdown, no code fences):
+
+{{
+  "answer": "your final answer text here (or 'Insufficient information in retrieved knowledge.' / similar honest short refusal if applicable)",
+  "question_type": "one of the exact type names listed in {type_descriptions}"
+}}
+
+Ensure the JSON is syntactically valid and uses correct escaping if needed.
 
 '''.format(retrieved_knowledge=retrieved_knowledge, question=question, type_descriptions=type_descriptions)
         raw = self.generate_response(prompt)
@@ -124,6 +142,7 @@ HARD CONSTRAINTS (mandatory):
 
 4. Do not include line breaks, commentary, diagnostics, or metadata outside the JSON object. The value of `"answer"` may contain multiple paragraphs and examples, but the overall output must still be a single valid JSON object.
 5. If you cannot comply with any rule, still return the single JSON object; set `"answer"` to a short explanatory message describing why you cannot comply (keep message concise, factual, and in the chosen language).
+6. If authoritative knowledge or verifiable sources are unavailable for parts of the question, do not refuse: produce a best-effort answer based on your own understanding and reasoning. When doing so, include a concise parenthetical note in the rewritten answer indicating those portions are inference-based (e.g., `(Note: the following is based on model inference where external verification was not available.)`).
 
 BEHAVIORAL RULES (what to do):
 
@@ -132,6 +151,7 @@ BEHAVIORAL RULES (what to do):
 3. Do not introduce new top-level sections or modify the three input variable names. You may reorder sentences inside the answer, add short examples, add numbered steps, and improve precision of terms, but you must not append new metadata blocks or change the template.
 4. Keep style: professional, precise, and direct. Prefer numbered lists for steps, short definitions for technical terms at first use, and concise examples illustrating edge cases or typical inputs/outputs where helpful.
 5. Length target: produce an answer that is as short as possible while fully addressing the feedback — prefer clarity over verbosity. If a longer explanation is necessary, provide a short summary first (1–2 sentences), then the expanded content.
+6. When you rely on your own understanding because external knowledge is missing, (a) ensure conclusions are clearly reasoned, (b) add a one-sentence caveat about uncertainty or assumptions, and (c) include the concise parenthetical specified in HARD CONSTRAINTS #6.
 
 TECHNICAL RULES FOR JSON VALIDITY:
 
@@ -157,6 +177,10 @@ FINAL ACTION (what you must output now):
 
 * Produce the rewritten/optimized answer **only** in the required JSON format above.
 * Do not include any additional commentary, analysis, or metadata outside the JSON.
+
+---
+
+**If you believe your previous answer '{current_answer}' was correct, it is permissible to maintain your opinion.**
 
 '''.format(question=question, current_answer=current_answer, organized_feedback=organized_feedback)
         logger.info("Student revise_answer 输入指导长度=%s 字", len(organized_feedback or ""))

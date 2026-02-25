@@ -56,16 +56,25 @@ def parse_json_from_llm(raw: str) -> dict[str, Any] | None:
     return parse_llm_output_to_dict(raw)
 
 
+# Web Search 工具配置
+# 注意：web_search_preview 类型不被某些 API 支持（如 api.gpt.ge），暂时禁用
+# WEB_SEARCH_TOOL = {"type": "web_search_preview"}
+WEB_SEARCH_TOOL = None
+ENABLE_WEB_SEARCH_DEFAULT = False  # 默认是否启用 web search（已禁用：当前 API 不支持 web_search_preview）
+
+
 def llm_call(
     text: str,
     system_prompt: str | None = None,
     model: str | None = None,
+    enable_web_search: bool | None = None,
 ) -> str:
     """
     调用大模型生成回复。
     :param text: 用户/问题文本
     :param system_prompt: 可选系统提示
     :param model: 可选模型名，默认使用 config 中的 OPENAI_MODEL
+    :param enable_web_search: 是否启用 web search 工具，None 时使用默认配置
     :return: 模型回复文本
     """
     client = _get_client()
@@ -74,7 +83,20 @@ def llm_call(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": text})
-    resp = client.chat.completions.create(model=model, messages=messages)
+    
+    # 构建请求参数
+    request_params = {
+        "model": model,
+        "messages": messages,
+    }
+    
+    # 是否启用 web search
+    # 注意：web_search_preview 类型不被某些 API 支持，已禁用
+    use_web_search = enable_web_search if enable_web_search is not None else ENABLE_WEB_SEARCH_DEFAULT
+    if use_web_search and WEB_SEARCH_TOOL is not None:
+        request_params["tools"] = [WEB_SEARCH_TOOL]
+    
+    resp = client.chat.completions.create(**request_params)
     _accumulate_usage(getattr(resp, "usage", None))
     return (resp.choices[0].message.content or "").strip()
 

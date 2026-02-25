@@ -10,7 +10,7 @@ from utils.llm import llm_call
 class ClarityChecker(BaseAgent):
     """清晰度检查：指出歧义、含糊或难懂之处，建议更清晰的表述。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 # Role: Clarity Checker
 
@@ -18,7 +18,12 @@ class ClarityChecker(BaseAgent):
 You are a specialized Clarity Checker and Linguistic Precision Analyst. Your primary objective is to minimize cognitive load and eliminate semantic noise. You assess text objectively to ensure that the intended message is transmitted without distortion, ambiguity, or unnecessary complexity.
 
 # Task
-Please conduct a neutral, comprehensive clarity assessment of the following text:
+Please conduct a neutral, comprehensive clarity assessment of the following answer under the original question context.
+
+Original Question:
+{question}
+
+Answer To Review:
 
 {answer}
 
@@ -36,7 +41,7 @@ Please conduct a neutral, comprehensive clarity assessment of the following text
 You must output your analysis and recommendations strictly adhering to the following JSON structure:
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.78)
         return {

@@ -8,7 +8,6 @@ from typing import Any
 from utils.logger import get_logger
 
 from memory import (
-    build_knowledge_tree,
     create_wm,
     evolve_mk_from_better_agents,
     evolve_mk_from_random_agent,
@@ -20,7 +19,7 @@ from memory import (
     update_ltm,
     update_mk_from_ltm,
     update_wm,
-    RAGSearch,
+    get_chroma_rag,
 )
 from agents import AgentFactory, InsightAgent, MetaKnowledge, StudentAgent
 from utils.llm import (
@@ -41,8 +40,8 @@ def get_suggest(question: str) -> dict[str, Any]:
     logger.info("get_suggest 开始 question=%s", question[:80] + "..." if len(question) > 80 else question)
     ltm = load_ltm()
     mk_data = load_mk()
-    ltm_root = build_knowledge_tree(ltm)
-    rag_search = RAGSearch(ltm_root)
+    # 使用 Chroma 向量 RAG 检索（基于 ltmk.json 知识库）
+    rag_search = get_chroma_rag()
     mk = MetaKnowledge(mk_data)
     student = StudentAgent(rag_search)
     answer, question_type = student.answer(question, ltm, mk_data)
@@ -84,8 +83,8 @@ def run_system(
     )
     ltm = load_ltm()
     mk_data = load_mk()
-    ltm_root = build_knowledge_tree(ltm)
-    rag_search = RAGSearch(ltm_root)
+    # 使用 Chroma 向量 RAG 检索（基于 ltmk.json 知识库）
+    rag_search = get_chroma_rag()
     mk = MetaKnowledge(mk_data)
     student = StudentAgent(rag_search)
     insight = InsightAgent()
