@@ -6,6 +6,9 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any
 
+from config import MULTIAGENTS_MODEL_KEY, MULTIAGENTS_MODEL_NAME, MULTIAGENTS_MODEL_URL
+from utils.llm import llm_call
+
 # 各 Agent review 输出统一使用此 JSON 结构，便于后续解析与处理（仅 comment，不要求 score）
 AGENT_OUTPUT_JSON_SCHEMA = """
 请务必只输出一个合法的 JSON 对象，不要输出任何其他文字、解释或 Markdown 标记。
@@ -83,6 +86,15 @@ def parse_comment_score(comment: str, default_score: float) -> tuple[str, float]
 
 class BaseAgent(ABC):
     """多角色 Agent 基类，统一接口 review(answer, question)。"""
+
+    def _llm_call(self, prompt: str) -> str:
+        """统一使用 multi-agents 模型配置调用 LLM。"""
+        return llm_call(
+            prompt,
+            model=MULTIAGENTS_MODEL_NAME or None,
+            api_key=MULTIAGENTS_MODEL_KEY or None,
+            base_url=MULTIAGENTS_MODEL_URL or None,
+        )
 
     @abstractmethod
     def review(self, answer: str, question: str = "") -> dict[str, Any]:

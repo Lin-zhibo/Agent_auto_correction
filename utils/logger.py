@@ -6,6 +6,7 @@
 import logging
 import sys
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 from config import LOG_DIR
 
@@ -14,6 +15,65 @@ LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _initialized = False
+
+
+class _SizeOrLineRotatingFileHandler(RotatingFileHandler):
+    """同时按文件大小或行数触发滚动的 FileHandler。"""
+
+    def __init__(
+        self,
+        filename: str | Path,
+        *,
+        max_bytes: int,
+        max_lines: int,
+        backup_count: int = 5,
+        encoding: str = "utf-8",
+    ) -> None:
+        super().__init__(
+            filename=filename,
+            mode="a",
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding=encoding,
+        )
+        self._max_lines = max_lines
+        self._line_count = self._count_existing_lines()
+
+    def _count_existing_lines(self) -> int:
+        if not self.baseFilename:
+            return 0
+        path = Path(self.baseFilename)
+        if not path.exists():
+            return 0
+        try:
+            with path.open("r", encoding=self.encoding or "utf-8", errors="ignore") as f:
+                return sum(1 for _ in f)
+        except OSError:
+            return 0
+
+    def shouldRollover(self, record: logging.LogRecord) -> int:  # noqa: N802
+        if super().shouldRollover(record):
+            return 1
+        if self._max_lines <= 0:
+            return 0
+        msg = self.format(record)
+        next_lines = msg.count("\n") + 1
+        return 1 if (self._line_count + next_lines) > self._max_lines else 0
+
+    def doRollover(self) -> None:  # noqa: N802
+        super().doRollover()
+        self._line_count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = self.format(record)
+        added_lines = msg.count("\n") + 1
+        if self.shouldRollover(record):
+            self.doRollover()
+        if self.stream is None:
+            self.stream = self._open()
+        self.stream.write(msg + self.terminator)
+        self.flush()
+        self._line_count += added_lines
 
 
 def _ensure_log_dir() -> Path:
@@ -42,7 +102,13 @@ def setup_logging(
 
     if log_file:
         path = LOG_DIR / log_file if isinstance(log_file, str) else Path(log_file)
-        fh = logging.FileHandler(path, encoding="utf-8")
+        fh = _SizeOrLineRotatingFileHandler(
+            filename=path,
+            max_bytes=1024 * 1024,
+            max_lines=50_000,
+            backup_count=5,
+            encoding="utf-8",
+        )
         fh.setLevel(level)
         fh.setFormatter(formatter)
         root.addHandler(fh)

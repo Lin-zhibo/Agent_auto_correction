@@ -8,6 +8,8 @@ from openai import OpenAI
 from config import (
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
+    OPENAI_EMBEDDING_API_KEY,
+    OPENAI_EMBEDDING_BASE_URL,
     OPENAI_EMBEDDING_MODEL,
     OPENAI_MODEL,
 )
@@ -47,6 +49,31 @@ def _get_client() -> OpenAI:
     return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 
+def _get_client_with_override(
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> OpenAI:
+    """获取 OpenAI 客户端（支持按调用覆盖 key/base_url）。"""
+    key = (api_key or OPENAI_API_KEY or "").strip()
+    url = (base_url or OPENAI_BASE_URL or "").strip()
+    if not key:
+        raise ValueError(
+            "请设置 OPENAI_API_KEY：在 config.py 中配置或设置环境变量 OPENAI_API_KEY"
+        )
+    return OpenAI(api_key=key, base_url=url)
+
+
+def _get_embedding_client() -> OpenAI:
+    """获取 embedding 专用 OpenAI 客户端。"""
+    key = (OPENAI_EMBEDDING_API_KEY or "").strip()
+    url = (OPENAI_EMBEDDING_BASE_URL or "").strip()
+    if not key:
+        raise ValueError(
+            "请设置 embedding 的 API Key：OPENAI_EMBEDDING_API_KEY 或 cfg/conf.json 中 EMBEDDING_MODEL.KEY"
+        )
+    return OpenAI(api_key=key, base_url=url or None)
+
+
 def parse_json_from_llm(raw: str) -> dict[str, Any] | None:
     """
     从 LLM 回复中解析出 JSON 对象，供调用方用 .get() 获取字段。
@@ -68,6 +95,8 @@ def llm_call(
     system_prompt: str | None = None,
     model: str | None = None,
     enable_web_search: bool | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> str:
     """
     调用大模型生成回复。
@@ -75,9 +104,11 @@ def llm_call(
     :param system_prompt: 可选系统提示
     :param model: 可选模型名，默认使用 config 中的 OPENAI_MODEL
     :param enable_web_search: 是否启用 web search 工具，None 时使用默认配置
+    :param api_key: 可选 API Key，未传时使用默认配置
+    :param base_url: 可选 API Base URL，未传时使用默认配置
     :return: 模型回复文本
     """
-    client = _get_client()
+    client = _get_client_with_override(api_key=api_key, base_url=base_url)
     model = model or OPENAI_MODEL
     messages = []
     if system_prompt:
@@ -103,9 +134,14 @@ def llm_call(
 
 def get_embedding(text: str) -> list[float]:
     """获取单段文本的 embedding。"""
-    client = _get_client()
+    model = (OPENAI_EMBEDDING_MODEL or "").strip()
+    if not model:
+        raise ValueError(
+            "请设置 embedding 模型：OPENAI_EMBEDDING_MODEL 或 cfg/conf.json 中 EMBEDDING_MODEL.NAME"
+        )
+    client = _get_embedding_client()
     resp = client.embeddings.create(
-        model=OPENAI_EMBEDDING_MODEL,
+        model=model,
         input=text,
     )
     _accumulate_usage(getattr(resp, "usage", None))

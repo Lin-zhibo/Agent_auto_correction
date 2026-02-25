@@ -4,7 +4,7 @@
 import random
 from typing import Any
 
-from config import MK_JUDGE_MODEL
+from config import MK_JUDGE_MODEL, MK_MODEL_KEY, MK_MODEL_URL
 from memory.mk_memory import get_config_for_question_type, infer_question_type, load_mk
 from utils.llm import llm_call, semantic_similarity
 from utils.logger import get_logger
@@ -164,18 +164,35 @@ class MetaKnowledge:
         """
         # 双向蕴含判断 Prompt 模板
         logger.info("双向蕴含判断开始: answer1='%s', answer2='%s'", answer1, answer2)
-        entail_prompt_template = """You are a semantic equivalence judge. Given two answers, determine if the first answer semantically entails the second answer.
+        entail_prompt_template = """You are a strict semantic entailment judge for short QA answers.
 
-Answer 1: {answer1}
-Answer 2: {answer2}
+    Task: Determine whether Answer 1 semantically entails Answer 2.
 
-Does Answer 1 semantically entail Answer 2? That is, if Answer 1 is true, must Answer 2 also be true?
-Reply with "Yes" or "No" only."""
+    Answer 1: {answer1}
+    Answer 2: {answer2}
+
+    Judging principles:
+    1. Focus on core factual meaning, not wording style.
+    2. Ignore minor surface differences: punctuation, articles, stopwords, capitalization, tense, word order, and optional lead-in phrases (e.g., "Based on the retrieved knowledge", "According to the context").
+    3. Treat concise vs verbose versions as equivalent if they assert the same facts.
+    4. Treat title/detail differences as equivalent when compatible (e.g., "Marco Huck" vs "WBO Cruiserweight champion Marco Huck").
+    5. Return "No" only when Answer 2 adds a new factual claim not guaranteed by Answer 1, or contradicts Answer 1.
+
+    Decision question:
+    If Answer 1 is true, must Answer 2 also be true?
+
+    Output rule:
+    Reply with exactly one token: Yes or No."""
 
         # 方向1: answer1 -> answer2
         prompt_1_to_2 = entail_prompt_template.format(answer1=answer1, answer2=answer2)
         try:
-            response_1_to_2 = llm_call(prompt_1_to_2, model=MK_JUDGE_MODEL).strip().lower()
+            response_1_to_2 = llm_call(
+                prompt_1_to_2,
+                model=MK_JUDGE_MODEL,
+                api_key=MK_MODEL_KEY or None,
+                base_url=MK_MODEL_URL or None,
+            ).strip().lower()
         except Exception as e:
             logger.warning("is_bientail 调用 LLM 失败 (1->2): %s", e)
             return False
@@ -183,7 +200,12 @@ Reply with "Yes" or "No" only."""
         # 方向2: answer2 -> answer1
         prompt_2_to_1 = entail_prompt_template.format(answer1=answer2, answer2=answer1)
         try:
-            response_2_to_1 = llm_call(prompt_2_to_1, model=MK_JUDGE_MODEL).strip().lower()
+            response_2_to_1 = llm_call(
+                prompt_2_to_1,
+                model=MK_JUDGE_MODEL,
+                api_key=MK_MODEL_KEY or None,
+                base_url=MK_MODEL_URL or None,
+            ).strip().lower()
         except Exception as e:
             logger.warning("is_bientail 调用 LLM 失败 (2->1): %s", e)
             return False

@@ -4,7 +4,6 @@
 from typing import Any
 
 from agents.multi_agents.base import AGENT_OUTPUT_JSON_SCHEMA, BaseAgent, parse_agent_output
-from utils.llm import llm_call
 
 
 class AuthorityChecker(BaseAgent):
@@ -41,7 +40,7 @@ Please analyze the text based on the following criteria:
 
 {json_schema}
 '''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
-        raw = llm_call(prompt)
+        raw = self._llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {
             "agent": "authority_checker",

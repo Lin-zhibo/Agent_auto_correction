@@ -22,9 +22,9 @@ from utils.llm import reset_token_usage, get_token_usage
 from utils.logger import get_logger, setup_logging
 
 # 配置
-KEY = "sk-XcGaOx4wJHKQ8Rq694E001E4209347E6A27174272d687bBa"
-BASE_URL = "https://api.gpt.ge/v1/"
-JUDGE_MODEL = "gpt-5"
+KEY = "sk-35152781e1e94df0a424a4ea9f900abc"
+BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+JUDGE_MODEL = "qwen3.5-plus"
 
 # 路径
 SCRIPT_DIR = Path(__file__).resolve().parent

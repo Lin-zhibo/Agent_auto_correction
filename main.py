@@ -183,7 +183,7 @@ if __name__ == "__main__":
     from datetime import datetime, timezone
     from pathlib import Path
 
-parser = argparse.ArgumentParser(description="批量运行多 Agent 反思系统")
+    parser = argparse.ArgumentParser(description="批量运行多 Agent 反思系统")
     parser.add_argument(
         "--dataset",
         type=str,

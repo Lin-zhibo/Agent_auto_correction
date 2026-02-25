@@ -6,6 +6,7 @@ Insight Agent：收集多 Agent 阶段输出，调用 LLM 综合问题、Student
 
 from typing import Any
 
+from config import INSIGHT_MODEL_KEY, INSIGHT_MODEL_NAME, INSIGHT_MODEL_URL
 from utils.llm import llm_call
 from utils.logger import get_logger
 from utils.parse_llm_json import parse_llm_output_to_dict
@@ -101,7 +102,12 @@ Output only the JSON.
             raw_feedback=raw_feedback,
         )
         try:
-            raw = llm_call(prompt).strip()
+            raw = llm_call(
+                prompt,
+                model=INSIGHT_MODEL_NAME or None,
+                api_key=INSIGHT_MODEL_KEY or None,
+                base_url=INSIGHT_MODEL_URL or None,
+            ).strip()
             obj = parse_llm_output_to_dict(raw)
             if obj is not None:
                 guidance = _format_improvement_guidance(obj)

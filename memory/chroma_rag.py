@@ -13,7 +13,14 @@ import chromadb
 from chromadb.config import Settings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_EMBEDDING_MODEL, LTMK_PATH, CHROMA_PERSIST_DIR
+from config import (
+    OPENAI_BASE_URL,
+    OPENAI_EMBEDDING_API_KEY,
+    OPENAI_EMBEDDING_BASE_URL,
+    OPENAI_EMBEDDING_MODEL,
+    LTMK_PATH,
+    CHROMA_PERSIST_DIR,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,8 +32,8 @@ def _get_embedding_function():
     
     model = OPENAI_EMBEDDING_MODEL or "text-embedding-3-small"
     return OpenAIEmbeddingFunction(
-        api_key=OPENAI_API_KEY,
-        api_base=OPENAI_BASE_URL or None,
+        api_key=OPENAI_EMBEDDING_API_KEY,
+        api_base=OPENAI_EMBEDDING_BASE_URL or OPENAI_BASE_URL or None,
         model_name=model,
     )
 
@@ -105,6 +112,24 @@ class ChromaRAGSearch:
 
     COLLECTION_NAME = "knowledge_base"
 
+    @staticmethod
+    def _build_embedding_signature() -> str:
+        model = (OPENAI_EMBEDDING_MODEL or "text-embedding-3-small").strip()
+        base_url = (OPENAI_EMBEDDING_BASE_URL or OPENAI_BASE_URL or "").strip()
+        return f"{model}|{base_url}"
+
+    def _needs_collection_rebuild(self, expected_signature: str) -> bool:
+        metadata = getattr(self._collection, "metadata", None) or {}
+        existing_signature = str(metadata.get("embedding_signature", "") or "").strip()
+        if existing_signature and existing_signature != expected_signature:
+            return True
+        if not existing_signature:
+            try:
+                return self._collection.count() > 0
+            except Exception:
+                return True
+        return False
+
     def __init__(self, persist: bool = True):
         """
         初始化 Chroma RAG。
@@ -134,6 +159,8 @@ class ChromaRAGSearch:
     def _do_initialize(self) -> None:
         """执行实际的初始化逻辑。"""
         logger.info("初始化 Chroma RAG...")
+        embedding_signature = self._build_embedding_signature()
+        embedding_model = (OPENAI_EMBEDDING_MODEL or "text-embedding-3-small").strip()
         
         # 创建嵌入函数
         self._embedding_fn = _get_embedding_function()
@@ -154,8 +181,25 @@ class ChromaRAGSearch:
         self._collection = self._client.get_or_create_collection(
             name=self.COLLECTION_NAME,
             embedding_function=self._embedding_fn,
-            metadata={"description": "知识库向量索引"},
+            metadata={
+                "description": "知识库向量索引",
+                "embedding_model": embedding_model,
+                "embedding_signature": embedding_signature,
+            },
         )
+
+        if self._needs_collection_rebuild(embedding_signature):
+            logger.warning("检测到 embedding 配置变更，重建 Chroma 索引")
+            self._client.delete_collection(self.COLLECTION_NAME)
+            self._collection = self._client.get_or_create_collection(
+                name=self.COLLECTION_NAME,
+                embedding_function=self._embedding_fn,
+                metadata={
+                    "description": "知识库向量索引",
+                    "embedding_model": embedding_model,
+                    "embedding_signature": embedding_signature,
+                },
+            )
         
         # 同步知识库
         self._sync_knowledge()
@@ -258,7 +302,7 @@ class ChromaRAGSearch:
         if to_add_ids:
             add_ids = list(to_add_ids)
             add_docs = [current_docs[doc_id] for doc_id in add_ids]
-            batch_size = 20  # 每批最多 20 条，避免 embedding 请求过大
+            batch_size = 10  # DashScope embedding 接口单次最多 10 条输入
             for start in range(0, len(add_ids), batch_size):
                 batch_ids = add_ids[start:start + batch_size]
                 batch_docs = add_docs[start:start + batch_size]
