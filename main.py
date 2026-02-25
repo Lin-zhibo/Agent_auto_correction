@@ -111,7 +111,7 @@ def run_system(
             )
         round_num = loop_count + 1
         logger.info("========== 第 %s 轮 ========== 本轮 Agent: %s", round_num, agents_this_round)
-        feedbacks = [AgentFactory.create(a).review(answer) for a in agents_this_round]
+        feedbacks = [AgentFactory.create(a).review(answer, question) for a in agents_this_round]
         for fb in feedbacks:
             comment = (fb.get("comment") or "").strip()
             if comment:
@@ -177,12 +177,32 @@ def run_system(
 
 
 if __name__ == "__main__":
+    import argparse
     import json
     import time
     from datetime import datetime, timezone
     from pathlib import Path
 
-    test_path = Path(__file__).parent / "testdata" / "test.json"
+parser = argparse.ArgumentParser(description="批量运行多 Agent 反思系统")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="数据集文件路径（JSON 数组，元素需包含 question 字段）",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="结果输出文件路径（默认 testdata/results.json）",
+    )
+    args = parser.parse_args()
+
+    default_dataset = Path(__file__).parent / "testdata" / "test.json"
+    default_output = Path(__file__).parent / "testdata" / "results.json"
+    test_path = Path(args.dataset).expanduser() if args.dataset else default_dataset
+    out_path = Path(args.output).expanduser() if args.output else default_output
+
     with open(test_path, encoding="utf-8") as f:
         items = json.load(f)
 
@@ -212,7 +232,7 @@ if __name__ == "__main__":
         print("=== 最终答案 ===")
         print(run_result["final_answer"])
 
-    out_path = Path(__file__).parent / "testdata" / "results.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n结果已保存至 {out_path}")
