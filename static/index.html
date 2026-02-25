@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多 Agent 反思系统</title>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #1a1a20;
+      --border: #2a2a32;
+      --text: #e8e8ed;
+      --muted: #8888a0;
+      --accent: #6c8aff;
+      --accent-hover: #8aa4ff;
+      --success: #4ade80;
+      --error: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 2rem;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+    label { display: block; margin-bottom: 0.35rem; font-size: 0.9rem; }
+    textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 0.75rem 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      resize: vertical;
+    }
+    textarea::placeholder { color: var(--muted); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.6rem 1.2rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--border); }
+    .mt-1 { margin-top: 1rem; }
+    .mt-2 { margin-top: 1.5rem; }
+    .mb-1 { margin-bottom: 1rem; }
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-top: 1.5rem;
+    }
+    .section-title { font-weight: 600; margin-bottom: 0.75rem; font-size: 0.95rem; }
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 0.5rem;
+    }
+    .agent-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
+      font-size: 0.9rem;
+    }
+    .agent-item input[type="checkbox"] {
+      width: 1rem;
+      height: 1rem;
+      accent-color: var(--accent);
+    }
+    .agent-item.suggested label { color: var(--accent); }
+    .options-row {
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+    .options-row label { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0; cursor: pointer; }
+    .options-row input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: var(--accent); }
+    .answer-box {
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-top: 0.75rem;
+    }
+    .status { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; }
+    .status.error { color: var(--error); }
+    .status.success { color: var(--success); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>多 Agent 反思系统</h1>
+    <p class="subtitle">输入问题后先获取 MK 建议的 Agent，勾选要参与的 Agent 及是否更新 LTM/MK，再开始多轮问询。</p>
+
+    <label for="question">问题</label>
+    <textarea id="question" placeholder="例如：什么是机器学习？"></textarea>
+
+    <div class="mt-1">
+      <button type="button" class="btn btn-secondary" id="btnSuggest">获取建议</button>
+    </div>
+
+    <div class="section" id="sectionSuggest" style="display: none;">
+      <div class="section-title">系统建议（MK 给出的 Agent 已勾选）</div>
+      <p class="status" id="suggestStatus"></p>
+      <div class="section-title mt-2">初答</div>
+      <div class="answer-box" id="initialAnswer"></div>
+      <div class="section-title mt-2">选择参与问询的 Agent（可多选）</div>
+      <div class="agents-grid" id="agentsGrid"></div>
+      <div class="options-row mt-2">
+        <label><input type="checkbox" id="updateLtm" checked /> 更新 LTM</label>
+        <label><input type="checkbox" id="updateMk" checked /> 更新 MK</label>
+      </div>
+      <div class="mt-2">
+        <button type="button" class="btn btn-primary" id="btnRun">开始多轮问询</button>
+      </div>
+    </div>
+
+    <div class="section" id="sectionResult" style="display: none;">
+      <div class="section-title">最终答案</div>
+      <p class="status" id="runStatus"></p>
+      <div class="answer-box" id="finalAnswer"></div>
+    </div>
+  </div>
+
+  <script>
+    const questionEl = document.getElementById('question');
+    const btnSuggest = document.getElementById('btnSuggest');
+    const btnRun = document.getElementById('btnRun');
+    const sectionSuggest = document.getElementById('sectionSuggest');
+    const sectionResult = document.getElementById('sectionResult');
+    const suggestStatus = document.getElementById('suggestStatus');
+    const runStatus = document.getElementById('runStatus');
+    const initialAnswer = document.getElementById('initialAnswer');
+    const finalAnswer = document.getElementById('finalAnswer');
+    const agentsGrid = document.getElementById('agentsGrid');
+    const updateLtmEl = document.getElementById('updateLtm');
+    const updateMkEl = document.getElementById('updateMk');
+
+    const API_BASE = '';
+
+    async function suggest() {
+      const question = (questionEl.value || '').trim();
+      if (!question) {
+        suggestStatus.textContent = '请输入问题';
+        suggestStatus.className = 'status error';
+        return;
+      }
+      suggestStatus.textContent = '正在获取建议…';
+      suggestStatus.className = 'status';
+      btnSuggest.disabled = true;
+      try {
+        const res = await fetch(API_BASE + '/api/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || '获取建议失败');
+        initialAnswer.textContent = data.initial_answer || '';
+        suggestStatus.textContent = '已获取建议，请勾选要参与的 Agent 后点击「开始多轮问询」。';
+        suggestStatus.className = 'status success';
+        const suggestedSet = new Set(data.suggested_agents || []);
+        agentsGrid.innerHTML = '';
+        (data.all_agents_with_labels || []).forEach(function (a) {
+          const div = document.createElement('div');
+          div.className = 'agent-item' + (suggestedSet.has(a.id) ? ' suggested' : '');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.id = 'agent_' + a.id;
+          cb.value = a.id;
+          cb.checked = suggestedSet.has(a.id);
+          const lbl = document.createElement('label');
+          lbl.htmlFor = cb.id;
+          lbl.textContent = a.label || a.id;
+          div.appendChild(cb);
+          div.appendChild(lbl);
+          agentsGrid.appendChild(div);
+        });
+        sectionSuggest.style.display = 'block';
+        sectionResult.style.display = 'none';
+      } catch (e) {
+        suggestStatus.textContent = '错误：' + (e.message || String(e));
+        suggestStatus.className = 'status error';
+      } finally {
+        btnSuggest.disabled = false;
+      }
+    }
+
+    async function run() {
+      const question = (questionEl.value || '').trim();
+      if (!question) {
+        runStatus.textContent = '请输入问题';
+        runStatus.className = 'status error';
+        return;
+      }
+      const selected = [];
+      agentsGrid.querySelectorAll('input[type="checkbox"]:checked').forEach(function (cb) {
+        selected.push(cb.value);
+      });
+      if (selected.length === 0) {
+        runStatus.textContent = '请至少勾选一个 Agent';
+        runStatus.className = 'status error';
+        return;
+      }
+      runStatus.textContent = '正在多轮问询…';
+      runStatus.className = 'status';
+      finalAnswer.textContent = '';
+      btnRun.disabled = true;
+      sectionResult.style.display = 'block';
+      try {
+        const res = await fetch(API_BASE + '/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question,
+            selected_agents: selected,
+            update_ltm: updateLtmEl.checked,
+            update_mk: updateMkEl.checked,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || '运行失败');
+        finalAnswer.textContent = data.final_answer || '';
+        runStatus.textContent = '完成。' + (data.update_ltm ? '已更新 LTM。' : '') + (data.update_mk ? '已更新 MK。' : '');
+        runStatus.className = 'status success';
+      } catch (e) {
+        runStatus.textContent = '错误：' + (e.message || String(e));
+        runStatus.className = 'status error';
+      } finally {
+        btnRun.disabled = false;
+      }
+    }
+
+    btnSuggest.addEventListener('click', suggest);
+    btnRun.addEventListener('click', run);
+  </script>
+</body>
+</html>
