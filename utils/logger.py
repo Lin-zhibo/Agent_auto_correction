@@ -16,7 +16,6 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _initialized = False
 
-
 class _SizeOrLineRotatingFileHandler(RotatingFileHandler):
     """同时按文件大小或行数触发滚动的 FileHandler。"""
 
