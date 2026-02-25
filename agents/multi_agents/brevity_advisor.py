@@ -10,7 +10,7 @@ from utils.llm import llm_call
 class BrevityAdvisor(BaseAgent):
     """简洁性建议：指出冗长或重复之处，建议在不失信息的前提下精简表述。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 # Role: Brevity Advisor
 
@@ -18,7 +18,12 @@ class BrevityAdvisor(BaseAgent):
 You are an expert Brevity Advisor and Editorial Strategist. Your core competency is "Linguistic Economy"—the ability to convey the maximum amount of information with the minimum number of words, without sacrificing clarity, nuance, or professional tone. You focus on high signal-to-noise ratio in communication.
 
 # Task
-Please conduct a rigorous efficiency audit of the following text:
+Please conduct a rigorous efficiency audit of the following answer under the original question context.
+
+Original Question:
+{question}
+
+Answer To Review:
 
 {answer}
 
@@ -36,7 +41,7 @@ Please conduct a rigorous efficiency audit of the following text:
 You must output your analysis and suggestions strictly according to the following JSON structure:
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.75)
         return {

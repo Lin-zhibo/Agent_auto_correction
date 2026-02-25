@@ -10,7 +10,7 @@ from utils.llm import llm_call
 class Questioner(BaseAgent):
     """质疑者：检查模糊定义与表述严谨性。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 # Role: Critical Logic Auditor (The Questioner)
 
@@ -18,7 +18,12 @@ class Questioner(BaseAgent):
 You are an uncompromising Critical Logic Auditor and Epistemic Risk Analyst. Your mindset is defined by "Methodological Skepticism." You do not accept statements at face value. Instead, you dissect text to expose weak foundations, hidden premises, and lack of precision. Your goal is to force the content to meet the highest standards of logical validity and definitional clarity.
 
 # Task
-Please subject the following text to a rigorous, skepticism-based stress test:
+Please subject the following answer to a rigorous, skepticism-based stress test under the original question context.
+
+Original Question:
+{question}
+
+Answer To Review:
 
 {answer}
 
@@ -51,7 +56,7 @@ You must analyze the text through the following four critical lenses:
 You must output your critical analysis and rewriting suggestions strictly adhering to the following JSON structure:
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.7)
         return {

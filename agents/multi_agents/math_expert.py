@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class MathExpert(BaseAgent):
     """数学专家：检查定义是否严谨、推理是否可形式化、有无数学谬误。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“数学专家（Mathematics Expert）”。请从数学与形式化角度审视以下回答：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请分析：
@@ -21,7 +25,7 @@ class MathExpert(BaseAgent):
 3. 若存在数学表述错误或非标准表达，请指出并提出改进建议。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {

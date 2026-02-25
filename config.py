@@ -39,6 +39,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = PROJECT_ROOT / "log"
 LTM_PATH = DATA_DIR / "ltm.json"
+LTMK_PATH = DATA_DIR / "ltmk.json"  # 知识库（用于 Chroma RAG）
+CHROMA_PERSIST_DIR = DATA_DIR / "chroma_db"  # Chroma 持久化目录
 MK_MEMORY_PATH = DATA_DIR / "mk_memory.json"
 
 # ---------- MK 默认问题类型（当无法推断类型时使用） ----------

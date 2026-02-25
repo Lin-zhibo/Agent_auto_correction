@@ -65,13 +65,20 @@ def call_stu_llm(question: str) -> str:
         return ""
 
 
-def call_judge_llm(knowledge: str, question: str, answer: str) -> bool:
+# Web Search 工具配置
+# 注意：web_search_preview 类型不被某些 API 支持（如 api.gpt.ge），暂时禁用
+# WEB_SEARCH_TOOL = {"type": "web_search_preview"}
+WEB_SEARCH_TOOL = None
+ENABLE_WEB_SEARCH = False  # 是否启用 web search（已禁用：当前 API 不支持 web_search_preview）
+
+
+def call_judge_llm(knowledge: str, question: str, answer: str) -> dict:
     """
     调用 judgeLLM 判断答案是否存在幻觉
     :param knowledge: 背景知识
     :param question: 问题
     :param answer: stuLLM 给出的答案
-    :return: True 表示存在幻觉 (hallucinated)，False 表示无幻觉 (non-hallucinated)
+    :return: dict 包含 hallucinated, correct_answer, reasoning
     """
     client = get_judge_client()
     
@@ -93,48 +100,62 @@ Determine if the answer contains hallucinations (i.e., information that is factu
 1. Carefully compare the answer against the provided knowledge.
 2. If the answer contains ANY factual errors, made-up information, or contradictions with the knowledge, it is hallucinated.
 3. If the answer is fully supported by and consistent with the knowledge, it is NOT hallucinated.
+4. You MUST also provide the correct answer based on the knowledge and your reasoning.
 
 **Output:**
 Respond with ONLY a JSON object in the following format (no other text):
-{{"hallucinated": true}}  if the answer contains hallucinations
-{{"hallucinated": false}} if the answer does NOT contain hallucinations
+{{
+    "hallucinated": true or false,
+    "correct_answer": "The correct answer based on the knowledge (if hallucinated, provide what the answer should be; if not hallucinated, you can repeat the evaluated answer or provide a refined version)",
+    "reasoning": "Your detailed reasoning for why the answer is or is not hallucinated, including specific factual errors or confirmations"
+}}
 """
 
     try:
-        response = client.chat.completions.create(
-            model=JUDGE_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a hallucination detection expert. Respond only with JSON."},
+        # 构建请求参数
+        request_params = {
+            "model": JUDGE_MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a hallucination detection expert with web search capability. Respond only with JSON."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0,
-        )
+            "temperature": 0,
+        }
+        
+        # 如果启用 web search，添加工具参数
+        # 注意：web_search_preview 类型不被某些 API 支持，已禁用
+        if ENABLE_WEB_SEARCH and WEB_SEARCH_TOOL is not None:
+            request_params["tools"] = [WEB_SEARCH_TOOL]
+        
+        response = client.chat.completions.create(**request_params)
         
         raw_response = (response.choices[0].message.content or "").strip()
-        logger.info("judgeLLM 原始响应: %s", raw_response)
+        logger.info("judgeLLM 原始响应: %s", raw_response[:500] + "..." if len(raw_response) > 500 else raw_response)
         
         # 解析 JSON 响应
-        # 尝试提取 JSON
         import re
-        json_match = re.search(r'\{.*?\}', raw_response, re.DOTALL)
+        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
-            is_hallucinated = result.get("hallucinated", True)
-            return bool(is_hallucinated)
+            return {
+                "hallucinated": bool(result.get("hallucinated", True)),
+                "correct_answer": result.get("correct_answer", ""),
+                "reasoning": result.get("reasoning", "")
+            }
         
         # 如果无法解析 JSON，尝试简单判断
         lower_response = raw_response.lower()
         if "true" in lower_response:
-            return True
+            return {"hallucinated": True, "correct_answer": "", "reasoning": "JSON解析失败，根据响应中包含true判定"}
         elif "false" in lower_response:
-            return False
+            return {"hallucinated": False, "correct_answer": "", "reasoning": "JSON解析失败，根据响应中包含false判定"}
         else:
             logger.warning("judgeLLM 响应无法解析，默认为幻觉: %s", raw_response)
-            return True
+            return {"hallucinated": True, "correct_answer": "", "reasoning": "响应无法解析，默认判定为幻觉"}
             
     except Exception as e:
         logger.exception("judgeLLM 调用失败: %s", e)
-        return True  # 出错时保守地认为是幻觉
+        return {"hallucinated": True, "correct_answer": "", "reasoning": f"调用失败: {e}"}  # 出错时保守地认为是幻觉
 
 
 def load_dataset() -> list[dict]:
@@ -188,20 +209,27 @@ def run_evaluation():
         
         # Step 2: 调用 judgeLLM 判断是否幻觉
         t1 = time.perf_counter()
-        is_hallucinated = call_judge_llm(knowledge, question, stu_answer)
+        judge_result = call_judge_llm(knowledge, question, stu_answer)
         judge_time = time.perf_counter() - t1
+        
+        is_hallucinated = judge_result["hallucinated"]
+        judge_correct_answer = judge_result["correct_answer"]
+        judge_reasoning = judge_result["reasoning"]
         
         # judge 结果: 1=有幻觉, 0=无幻觉
         predicted_judge = 1 if is_hallucinated else 0
         
-        logger.info("judgeLLM 判断: %s (预测=%d, 真实=%d)", 
-                   "有幻觉" if is_hallucinated else "无幻觉",
-                   predicted_judge, ground_truth_judge)
+        # stuLLM 回答正确 = 无幻觉 (predicted_judge == 0)
+        stu_is_correct = (predicted_judge == 0)
+        
+        logger.info("judgeLLM 判断: %s", "有幻觉" if is_hallucinated else "无幻觉")
+        logger.info("judgeLLM 认为的正确答案: %s", judge_correct_answer[:300] + "..." if len(judge_correct_answer) > 300 else judge_correct_answer)
+        logger.info("judgeLLM 判断理由: %s", judge_reasoning[:500] + "..." if len(judge_reasoning) > 500 else judge_reasoning)
+        logger.info("stuLLM 回答: %s", "正确" if stu_is_correct else "错误（存在幻觉）")
         logger.info("judgeLLM 耗时: %.2f 秒", judge_time)
         
-        # 检查是否与 ground truth 一致
-        is_correct = (predicted_judge == ground_truth_judge)
-        if is_correct:
+        # stuLLM 回答正确（无幻觉）计入正确数
+        if stu_is_correct:
             correct_count += 1
         
         # 记录结果
@@ -213,7 +241,9 @@ def run_evaluation():
             "stu_answer": stu_answer,
             "ground_truth_judge": ground_truth_judge,
             "predicted_judge": predicted_judge,
-            "is_correct": is_correct,
+            "stu_is_correct": stu_is_correct,  # stuLLM回答是否正确（无幻觉=正确）
+            "judge_correct_answer": judge_correct_answer,  # judgeLLM认为的正确答案
+            "judge_reasoning": judge_reasoning,  # judgeLLM判断理由
             "stu_time_seconds": round(stu_time, 2),
             "judge_time_seconds": round(judge_time, 2),
             "stu_token_usage": token_usage,
@@ -223,7 +253,7 @@ def run_evaluation():
         # 实时保存（防止中断丢失）
         save_results(results)
         
-        logger.info("当前准确率: %.2f%% (%d/%d)", 
+        logger.info("当前 stuLLM 回答准确率: %.2f%% (%d/%d)", 
                    100 * correct_count / (idx + 1), correct_count, idx + 1)
     
     # 输出最终统计
@@ -231,8 +261,9 @@ def run_evaluation():
     logger.info("=" * 60)
     logger.info("评估完成！")
     logger.info("总样本数: %d", total)
-    logger.info("判断正确: %d", correct_count)
-    logger.info("最终准确率: %.2f%%", 100 * correct_count / total if total > 0 else 0)
+    logger.info("stuLLM 回答正确数（无幻觉）: %d", correct_count)
+    logger.info("stuLLM 回答错误数（有幻觉）: %d", total - correct_count)
+    logger.info("stuLLM 回答准确率: %.2f%%", 100 * correct_count / total if total > 0 else 0)
     logger.info("结果文件: %s", OUTPUT_PATH)
     logger.info("=" * 60)
     

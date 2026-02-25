@@ -22,3 +22,6 @@ env/
 *.swo
 
 /cfg
+
+data/chroma_db
+data/chroma_db/*

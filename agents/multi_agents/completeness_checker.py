@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class CompletenessChecker(BaseAgent):
     """完整性检查：指出遗漏的关键点、必要前提或边界条件。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“完整性检查者（Completeness Checker）”。请对以下回答进行分析：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请评估：
@@ -21,7 +25,7 @@ class CompletenessChecker(BaseAgent):
 3. 请提出补充建议，使回答更加全面与稳健。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.8)
         return {

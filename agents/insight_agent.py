@@ -46,6 +46,9 @@ class InsightAgent:
 
         # 3. 调用 LLM 综合问题、当前回答与多 Agent 反馈，生成下一轮改进总结（JSON）
         prompt = '''You are an expert "Reflection & Improvement Advisor" specialized in analyzing LLM-generated answers. Your sole purpose is to help improve the quality, accuracy, reasoning depth, completeness, safety, and user-value of the next iteration of the answer.
+你应当确认你的每一条输出建议对于得出正确答案都是必要的
+
+---
 
 You will be given exactly three pieces of information:
 

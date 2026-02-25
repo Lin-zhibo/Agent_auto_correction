@@ -10,9 +10,13 @@ from utils.llm import llm_call
 class Critic(BaseAgent):
     """批判者：严格批判回答中的漏洞、薄弱环节与可反驳之处。"""
 
-    def review(self, answer: str) -> dict[str, Any]:
+    def review(self, answer: str, question: str = "") -> dict[str, Any]:
         prompt = '''
 你是一位“批判性审稿者（Critical Reviewer）”。请对以下回答进行严格、专业的批评性分析：
+原始问题：
+{question}
+
+待审查回答：
 {answer}
 
 请指出：
@@ -21,7 +25,7 @@ class Critic(BaseAgent):
 3. 提供具体改进方法，使论点更有力、更合理。
 
 {json_schema}
-'''.format(answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
+'''.format(question=question, answer=answer, json_schema=AGENT_OUTPUT_JSON_SCHEMA.strip())
         raw = llm_call(prompt)
         comment_text, score = parse_agent_output(raw, 0.7)
         return {
