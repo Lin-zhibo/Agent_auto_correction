@@ -26,3 +26,4 @@ env/
 config*
 
 data/ltm_*
+.omc
