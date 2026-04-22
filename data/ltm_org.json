@@ -1,21 +1,3 @@
-{
-  "version": "2.0",
-  "categories": {
-    "TEXT_WRITING": [],
-    "SUMMARIZATION": [],
-    "CODE_DEVELOPMENT": [],
-    "KNOWLEDGE_QA": [],
-    "EDUCATIONAL_TUTORING": [],
-    "TRANSLATION_LOCALIZATION": [],
-    "CREATIVE_IDEATION": [],
-    "DATA_PROCESSING": [],
-    "ROLE_PLAYING": [],
-    "CAREER_BUSINESS": [],
-    "LIFE_EMOTIONAL": [],
-    "MARKETING_COPYWRITING": [],
-    "LOGICAL_REASONING": [],
-    "MATH_COMPUTATION": [],
-    "MULTIMODAL": [],
-    "OTHER_GENERAL_Q": []
-  }
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:877bec3835537af78e6c2370de0c43271ae91c60094448207f1440025cff42ea
+size 505

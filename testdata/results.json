@@ -1,12 +1,3 @@
-[
-  {
-    "问题": "USER: What are some species of bears that are now extinct? ASSISTANT:",
-    "第一次回答的答案": "Several extinct bear species are well documented through fossil evidence. The most notable include Ursus spelaeus (the Cave bear) and Ursus ingressus (the European cave bear), both of which became extinct approximately 24,000 years ago during the late Pleistocene epoch.",
-    "最终回答的答案": "Several extinct bear species are well documented through fossil evidence. The most notable include Ursus spelaeus (the Cave bear) and Ursus ingressus (the European cave bear), both of which became extinct approximately 24,000 years ago during the late Pleistocene epoch.",
-    "回答时间": "2026-03-03T11:31:06.074915+00:00",
-    "耗时_秒": 4.27,
-    "消耗的token": 4135,
-    "prompt_tokens": 3873,
-    "completion_tokens": 262
-  }
-]
+version https://git-lfs.github.com/spec/v1
+oid sha256:491ef54e76b3502cc4c51082387a988272491e8c89b4c5961e44df6ae0cb7f55
+size 882
