@@ -1,380 +1,591 @@
 # -*- coding: utf-8 -*-
-"""长期记忆 (LTM)：树形结构，支持逐层加载与更新。"""
+"""固定 16 类长期记忆（LTM）与检索工具。"""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from config import LTM_PATH
+from config import LTM_EMBEDDINGS_PATH, LTM_PATH
+from utils.llm import get_embedding, llm_call, parse_json_from_llm
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+_LTM_EMBEDDINGS_CACHE_KEY: tuple[str, int, int] | None = None
+_LTM_EMBEDDINGS_CACHE_VALUE: dict[str, Any] | None = None
 
-MAX_LTM_DEPTH_EXCLUDING_ROOT = 3  # 不包含根节点，最多三层：一级分类/二级分类/条目
+QUESTION_TYPES_16 = [
+    "TEXT_WRITING",
+    "SUMMARIZATION",
+    "CODE_DEVELOPMENT",
+    "KNOWLEDGE_QA",
+    "EDUCATIONAL_TUTORING",
+    "TRANSLATION_LOCALIZATION",
+    "CREATIVE_IDEATION",
+    "DATA_PROCESSING",
+    "ROLE_PLAYING",
+    "CAREER_BUSINESS",
+    "LIFE_EMOTIONAL",
+    "MARKETING_COPYWRITING",
+    "LOGICAL_REASONING",
+    "MATH_COMPUTATION",
+    "MULTIMODAL",
+    "OTHER_GENERAL_Q",
+]
+
+def empty_ltm() -> dict[str, Any]:
+    """返回固定 16 类的空知识库结构。"""
+    return {
+        "version": "2.0",
+        "categories": {k: [] for k in QUESTION_TYPES_16},
+    }
 
 
-def _tree_structure_summary(ltm: dict[str, Any]) -> str:
-    """从 LTM 树中提取一、二级结构摘要，供 LLM 选择路径。"""
-    tree = ltm.get("tree", {})
-    if not tree:
-        return "（当前无分类）"
-    lines = []
-    for l1, node1 in tree.items():
-        children = node1.get("children", {}) if isinstance(node1, dict) else {}
-        if children:
-            lines.append(f"- {l1}: " + "、".join(children.keys()))
-        else:
-            lines.append(f"- {l1}")
-    return "\n".join(lines)
+def _normalize_ltm(data: dict[str, Any]) -> dict[str, Any]:
+    out = empty_ltm()
+    categories = data.get("categories", {})
+    if not isinstance(categories, dict):
+        return out
+    for category in QUESTION_TYPES_16:
+        rows = categories.get(category, [])
+        if not isinstance(rows, list):
+            continue
+        valid_rows: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            q = str(row.get("question", "")).strip()
+            a = str(row.get("answer", "")).strip()
+            if q and a:
+                valid_rows.append({"question": q, "answer": a})
+        out["categories"][category] = valid_rows
+    return out
 
 
 def load_ltm(path: Path | None = None) -> dict[str, Any]:
-    """从 JSON 加载 LTM（树形结构）。"""
+    """加载固定结构 LTM，不合法则回退为空库。"""
     p = path or LTM_PATH
     if not p.exists():
-        return {"tree": {}}
+        return empty_ltm()
     with open(p, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if "tree" not in data:
-        return {"tree": {}}
-    return data
+    if not isinstance(data, dict):
+        return empty_ltm()
+    return _normalize_ltm(data)
 
 
 def save_ltm(ltm: dict[str, Any], path: Path | None = None) -> None:
-    """将 LTM（树形结构）保存到 JSON。"""
+    """保存固定结构 LTM。"""
     p = path or LTM_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
-        json.dump(ltm, f, ensure_ascii=False, indent=2)
+        json.dump(_normalize_ltm(ltm), f, ensure_ascii=False, indent=2)
+
+
+def empty_ltm_embeddings() -> dict[str, Any]:
+    """返回空的 LTM embedding 索引结构。"""
+    return {
+        "version": "1.0",
+        "source_ltm": str(LTM_PATH),
+        "entry_count": 0,
+        "entries": [],
+    }
+
+
+def _make_embeddings_cache_key(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    return (resolved, stat.st_mtime_ns, stat.st_size)
+
+
+def _safe_resolve_str(path_str: str) -> str:
+    try:
+        return str(Path(path_str).resolve())
+    except OSError:
+        return str(path_str)
+
+
+def _normalize_question_type_label(label: str) -> str:
+    raw = (label or "").strip().upper()
+    if not raw:
+        return ""
+    normalized = raw.replace("-", "_").replace(" ", "_")
+    if normalized in QUESTION_TYPES_16:
+        return normalized
+    aliases = {
+        "KNOWLEDGE_QA_EXPERT": "KNOWLEDGE_QA",
+        "MATH": "MATH_COMPUTATION",
+        "CODING": "CODE_DEVELOPMENT",
+        "GENERAL": "OTHER_GENERAL_Q",
+    }
+    return aliases.get(normalized, "")
+
+
+def _extract_question_type_candidates_from_obj(obj: dict[str, Any] | None) -> list[str]:
+    if not isinstance(obj, dict):
+        return []
+
+    candidates: list[str] = []
+
+    def _append_candidate(val: Any) -> None:
+        if val is None:
+            return
+        if isinstance(val, list):
+            for item in val:
+                _append_candidate(item)
+            return
+        qt = _normalize_question_type_label(str(val))
+        if qt and qt not in candidates:
+            candidates.append(qt)
+
+    for key in (
+        "primary_category",
+        "primary_question_type",
+        "question_type",
+        "type",
+        "label",
+        "category",
+        "top_categories",
+        "categories",
+        "candidate_categories",
+        "candidates",
+    ):
+        _append_candidate(obj.get(key))
+    return candidates
+
+
+def _extract_question_type_from_obj(obj: dict[str, Any] | None) -> str:
+    candidates = _extract_question_type_candidates_from_obj(obj)
+    return candidates[0] if candidates else ""
+
+
+def _build_question_type_prompt(question: str, top_n: int = 2) -> str:
+    category_lines = "\n".join(f"- {name}" for name in QUESTION_TYPES_16)
+    return f"""
+你是一个问题分类器，需要将问题严格划分到下列 16 个类别中最可能的前 {max(1, top_n)} 个。
+
+候选类别：
+{category_lines}
+
+要求：
+1. 按置信度从高到低返回最多 {max(1, top_n)} 个类别。
+2. 返回 JSON，且只能返回 JSON。
+3. JSON 格式为：{{"primary_category": "类别名", "categories": ["类别1", "类别2"], "reason": "一句简短原因"}}
+4. `categories` 中必须包含 `primary_category`，且所有类别都必须来自候选列表。
+
+待分类问题：
+{question}
+""".strip()
+
+
+def _classify_question_types_via_llm(question: str, top_n: int = 2) -> tuple[list[str], str]:
+    prompt = _build_question_type_prompt(question, top_n=top_n)
+    system_prompt = "你是一个严格的问题分类器，只返回合法 JSON。"
+    raw = llm_call(prompt, system_prompt=system_prompt)
+    candidates = _extract_question_type_candidates_from_obj(parse_json_from_llm(raw))
+    return candidates[: max(1, top_n)], raw
+
+
+def infer_question_types_for_ltm(question: str, top_n: int = 2) -> list[str]:
+    """仅从固定 16 类中判定问题类型，返回按置信度排序的候选类别。"""
+    q = (question or "").strip()
+    if not q:
+        logger.info("[TRACE] classify source=fallback_empty question_types=%s", ["OTHER_GENERAL_Q"])
+        return ["OTHER_GENERAL_Q"]
+
+    try:
+        candidates, raw = _classify_question_types_via_llm(q, top_n=top_n)
+        if candidates:
+            logger.info("[TRACE] classify source=llm question_types=%s", candidates)
+            return candidates
+        logger.warning("infer_question_type_for_ltm 分类结果解析失败，原始输出: %s", raw)
+    except Exception as e:
+        logger.warning("infer_question_type_for_ltm 失败，回退 OTHER_GENERAL_Q: %s", e)
+    logger.info("[TRACE] classify source=fallback_invalid question_types=%s", ["OTHER_GENERAL_Q"])
+    return ["OTHER_GENERAL_Q"]
 
 
 def infer_question_type_for_ltm(question: str) -> str:
-    """
-    为 LTM 条目推断问题类型（与 MK 的 infer_question_type 规则一致）。
-    避免循环依赖，此处仅做简单规则；若需与 MK 一致可在外层传入 question_type。
-    """
-    q = question.strip()
-    if "为什么" in q or "如何" in q or "怎样" in q:
-        return "why_how"
-    if "什么是" in q or "是什么" in q or "定义" in q or "含义" in q:
-        return "what_is"
-    return "general"
+    """仅从固定 16 类中判定问题类型，返回最高置信类别。"""
+    candidates = infer_question_types_for_ltm(question, top_n=1)
+    return candidates[0] if candidates else "OTHER_GENERAL_Q"
 
 
-def _find_or_create_path(
-    tree: dict[str, Any],
-    path: list[str],
-    create_if_not_exists: bool = True,
-) -> dict[str, Any] | None:
-    """
-    在树中按路径查找节点（如 ["数学类", "计算类"]）。
-    若 create_if_not_exists=True 且路径不存在，则创建中间节点。
-    返回找到的节点（字典），若不存在且不创建则返回 None。
-    """
-    current = tree
-    for key in path:
-        if key not in current:
-            if not create_if_not_exists:
-                return None
-            current[key] = {
-                "content": "",
-                "question_type": None,
-                "children": {},
+def _normalize_text(text: str) -> str:
+    return "".join((text or "").strip().lower().split())
+
+
+def get_all_qa_entries(ltm: dict[str, Any]) -> list[dict[str, str]]:
+    """获取全库 QA 条目，附带 category。"""
+    out: list[dict[str, str]] = []
+    categories = (ltm or {}).get("categories", {})
+    if not isinstance(categories, dict):
+        return out
+    for category in QUESTION_TYPES_16:
+        rows = categories.get(category, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            q = str(row.get("question", "")).strip()
+            a = str(row.get("answer", "")).strip()
+            if q and a:
+                out.append({"category": category, "question": q, "answer": a})
+    return out
+
+
+def build_embedding_text(question: str, answer: str) -> str:
+    """构造用于 QA 检索的 embedding 文本。"""
+    return f"Question: {str(question or '').strip()}\nAnswer: {str(answer or '').strip()}"
+
+
+def _normalize_ltm_embeddings(data: dict[str, Any]) -> dict[str, Any]:
+    out = empty_ltm_embeddings()
+    if not isinstance(data, dict):
+        return out
+
+    out["version"] = str(data.get("version") or "1.0")
+    out["source_ltm"] = str(data.get("source_ltm") or str(LTM_PATH))
+    raw_entries = data.get("entries", [])
+    if not isinstance(raw_entries, list):
+        return out
+
+    valid_entries: list[dict[str, Any]] = []
+    for row in raw_entries:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category", "")).strip().upper()
+        question = str(row.get("question", "")).strip()
+        answer = str(row.get("answer", "")).strip()
+        embedding = row.get("embedding")
+        if category not in QUESTION_TYPES_16 or not question or not answer:
+            continue
+        if not isinstance(embedding, list) or not embedding:
+            continue
+        try:
+            embedding_values = [float(x) for x in embedding]
+        except (TypeError, ValueError):
+            continue
+        valid_entries.append(
+            {
+                "category": category,
+                "question": question,
+                "answer": answer,
+                "embedding": embedding_values,
             }
-        current = current[key].get("children", {})
-        if not isinstance(current, dict):
-            current = {}
-    return current
+        )
+
+    out["entries"] = valid_entries
+    out["entry_count"] = len(valid_entries)
+    return out
 
 
-def infer_topic_path_for_ltm(question: str, ltm: dict[str, Any]) -> list[str]:
-    """
-    根据问题与 LTM 树形结构，推断应插入的合适路径（用于找到树形结构中的位置）。
-    优先使用 LLM 从现有树结构中选择或建议路径；失败时退回关键词规则。
-    """
-    summary = _tree_structure_summary(ltm)
-    try:
-        from utils.llm import llm_call, parse_json_from_llm
-        prompt = '''当前长期记忆的树形结构（一级分类及其子分类）：
-{summary}
-
-问题：{question}
-
-请根据问题内容，选择最合适的一级和二级分类路径。若现有分类都不合适，可填「未分类」或建议新的一级名（如「经济学类」）。
-请输出的格式严格按照下面（只输出该 JSON，不要其他文字）：
-{{
-    "topic_path": "一级,二级"
-}}
-路径用英文逗号分隔，例如：技术类,机器学习 或 数学类,计算类。最多两级。
-'''.format(summary=summary, question=question[:500])
-        raw = llm_call(prompt)
-        obj = parse_json_from_llm(raw)
-        if obj is not None:
-            path_str = (obj.get("topic_path") or obj.get("path") or "").strip().replace("，", ",")
-            path = [s.strip() for s in path_str.split(",") if s.strip()]
-            if path and path[0].lower() not in ("无", "无分类", "无合适"):
-                return path[:3]
-        # 兜底：按原始文本解析
-        raw_stripped = (raw or "").strip().replace("，", ",")
-        path = [s.strip() for s in raw_stripped.split(",") if s.strip()]
-        if path and path[0].lower() not in ("无", "无分类", "无合适"):
-            return path[:3]
-    except Exception:
-        pass
-    # 退回关键词规则
-    if "数学" in question or "计算" in question or "逻辑" in question:
-        return ["数学类", "计算类"]
-    if "哲学" in question or "社会" in question:
-        return ["哲学类", "社会学"]
-    if "机器" in question or "学习" in question or "深度" in question:
-        return ["技术类", "机器学习"]
-    if "经济" in question:
-        return ["经济学类", "通用"]
-    return ["未分类"]
+def load_ltm_embeddings(path: Path | None = None) -> dict[str, Any]:
+    """加载预计算的 LTM embedding 索引。"""
+    global _LTM_EMBEDDINGS_CACHE_KEY, _LTM_EMBEDDINGS_CACHE_VALUE
+    p = path or LTM_EMBEDDINGS_PATH
+    if not p.exists():
+        logger.warning("LTM embedding 文件不存在: %s", p)
+        return empty_ltm_embeddings()
+    cache_key = _make_embeddings_cache_key(p)
+    if (
+        cache_key is not None
+        and _LTM_EMBEDDINGS_CACHE_KEY == cache_key
+        and _LTM_EMBEDDINGS_CACHE_VALUE is not None
+    ):
+        logger.info(
+            "LTM embedding 索引命中内存缓存 path=%s entry_count=%s",
+            p,
+            _LTM_EMBEDDINGS_CACHE_VALUE.get("entry_count", 0),
+        )
+        return _LTM_EMBEDDINGS_CACHE_VALUE
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    normalized = _normalize_ltm_embeddings(data)
+    source_ltm = str(normalized.get("source_ltm") or "").strip()
+    if source_ltm:
+        resolved_source = _safe_resolve_str(source_ltm)
+        resolved_current = _safe_resolve_str(str(LTM_PATH))
+        if resolved_source != resolved_current:
+            logger.warning(
+                "LTM embedding 索引来源与当前 LTM 路径不一致 source_ltm=%s current_ltm=%s",
+                source_ltm,
+                LTM_PATH,
+            )
+    logger.info(
+        "LTM embedding 索引加载完成 path=%s entry_count=%s source_ltm=%s",
+        p,
+        normalized.get("entry_count", 0),
+        source_ltm or "N/A",
+    )
+    if cache_key is not None:
+        _LTM_EMBEDDINGS_CACHE_KEY = cache_key
+        _LTM_EMBEDDINGS_CACHE_VALUE = normalized
+    return normalized
 
 
-def _sanitize_topic_name(name: str) -> str:
-    """清理 topic 名称，避免出现换行/逗号等导致路径解析异常的字符。"""
-    n = (name or "").strip()
-    n = n.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    n = n.replace("，", ",")
-    # 不允许逗号出现在单个节点名里（逗号用于路径分隔）
-    n = n.replace(",", " ").strip()
-    # 合并多空格
-    while "  " in n:
-        n = n.replace("  ", " ")
-    return n
+def save_ltm_embeddings(index_data: dict[str, Any], path: Path | None = None) -> None:
+    """保存预计算的 LTM embedding 索引。"""
+    p = path or LTM_EMBEDDINGS_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_ltm_embeddings(index_data)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
 
 
-def _llm_choose_or_create_node(
+def _build_single_entry_embedding(idx: int, row: dict[str, str]) -> tuple[int, dict[str, Any]]:
+    """单条 QA 的 embedding 计算，供并行调用。返回 (原始下标, 带 embedding 的条目)。"""
+    text = build_embedding_text(row["question"], row["answer"])
+    embedding = get_embedding(text)
+    return (
+        idx,
+        {
+            "category": row["category"],
+            "question": row["question"],
+            "answer": row["answer"],
+            "embedding": embedding,
+        },
+    )
+
+
+def build_ltm_embeddings(
+    ltm: dict[str, Any] | None = None,
     *,
-    level: int,
-    question: str,
-    parent_path: list[str],
-    candidates: list[str],
-) -> str:
-    """
-    让 LLM 在当前层的候选节点里选择最合适的一个；若都不合适则创建一个新节点名。
-    返回节点名（保证非空，失败时退回 '未分类'）。
-    """
-    try:
-        from utils.llm import llm_call, parse_json_from_llm
+    source_path: Path | None = None,
+    max_workers: int | None = None,
+) -> dict[str, Any]:
+    """根据当前 LTM 构建 embedding 索引数据。max_workers>1 时并行计算。"""
+    ltm_data = _normalize_ltm(ltm) if ltm is not None else load_ltm(source_path)
+    entries = get_all_qa_entries(ltm_data)
+    total = len(entries)
+    logger.info("开始构建 LTM embedding 索引 entry_count=%s max_workers=%s", total, max_workers)
 
-        cand_text = "\n".join(f"- {c}" for c in candidates) if candidates else "（无候选节点）"
-        parent_text = "/".join(parent_path) if parent_path else "root"
-        prompt = f'''你正在为长期记忆（LTM）的分类树选择/创建第 {level} 层节点。
+    if max_workers is not None and max_workers <= 1:
+        max_workers = None
 
-【父路径】
-{parent_text}
+    if max_workers is None:
+        built_entries = []
+        for idx, row in enumerate(entries, start=1):
+            _, built = _build_single_entry_embedding(0, row)
+            built_entries.append(built)
+            if idx == total or idx % 100 == 0:
+                logger.info("LTM embedding 构建进度 %s/%s", idx, total)
+    else:
+        index_to_built: dict[int, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_build_single_entry_embedding, idx, row): idx
+                for idx, row in enumerate(entries)
+            }
+            done = 0
+            for future in as_completed(futures):
+                idx, built = future.result()
+                index_to_built[idx] = built
+                done += 1
+                if done == total or done % 100 == 0:
+                    logger.info("LTM embedding 构建进度 %s/%s", done, total)
+        built_entries = [index_to_built[i] for i in range(len(entries))]
 
-【候选节点】
-{cand_text}
-
-【问题】
-{question}
-
-请在候选节点中选择最贴切的一个；若都不合适，请创建一个新的节点名（中文，尽量短，2-8 字）。
-请输出严格符合下面结构的 JSON，仅输出该 JSON，无其他文字：
-{{
-  "action": "choose_or_create",
-  "name": "节点名"
-}}
-其中 name 必须是一个节点名（不要包含逗号或换行）。
-'''
-        raw = llm_call(prompt)
-        obj = parse_json_from_llm(raw)
-        if obj is not None:
-            name = _sanitize_topic_name(str(obj.get("name") or ""))
-            if name:
-                return name
-    except Exception:
-        pass
-    # 兜底
-    return "未分类"
+    return {
+        "version": "1.0",
+        "source_ltm": str(source_path or LTM_PATH),
+        "entry_count": len(built_entries),
+        "entries": built_entries,
+    }
 
 
-def _llm_generate_entry_title(
-    *,
-    question: str,
-    parent_path: list[str],
-) -> str:
-    """
-    生成第 3 层条目标题（用于存储具体问答）。
-    返回标题（非空，失败时用问题前若干字兜底）。
-    """
-    try:
-        from utils.llm import llm_call, parse_json_from_llm
-
-        parent_text = "/".join(parent_path) if parent_path else "root"
-        prompt = f'''你正在为长期记忆（LTM）生成第 3 层“条目标题”（用于存放具体问答内容）。
-
-【父路径】
-{parent_text}
-
-【问题】
-{question}
-
-请给出一个简短、可读、能概括问题主题的标题（中文优先，4-12 字；不要包含逗号或换行）。
-请输出严格符合下面结构的 JSON，仅输出该 JSON，无其他文字：
-{{
-  "entry_title": "标题"
-}}
-'''
-        raw = llm_call(prompt)
-        obj = parse_json_from_llm(raw)
-        if obj is not None:
-            title = _sanitize_topic_name(str(obj.get("entry_title") or ""))
-            if title:
-                return title
-    except Exception:
-        pass
-    # 兜底：取问题前 12 个字符
-    q = _sanitize_topic_name(question)
-    return q[:12] if q else "条目"
-
-
-def infer_topic_path_layered_3level(question: str, ltm: dict[str, Any]) -> list[str]:
-    """
-    结合 LLM 做逐层检索/创建，得到固定三层（不含根）路径：
-    [一级分类, 二级分类, 条目标题]。
-
-    逐层策略：
-    - 第 1 层：从现有一级分类中选择，否则创建一级分类；
-    - 第 2 层：在已选一级下从现有二级中选择，否则创建二级；
-    - 第 3 层：生成条目标题，用于存放具体问答内容。
-    """
-    tree = ltm.get("tree", {}) if isinstance(ltm, dict) else {}
-    l1_candidates = list(tree.keys()) if isinstance(tree, dict) else []
-    l1 = _llm_choose_or_create_node(level=1, question=question, parent_path=[], candidates=l1_candidates)
-    if not l1:
-        l1 = "未分类"
-
-    # 确保一级节点存在
-    if "tree" not in ltm or not isinstance(ltm.get("tree"), dict):
-        ltm["tree"] = {}
-    if l1 not in ltm["tree"]:
-        ltm["tree"][l1] = {"content": "", "question_type": None, "children": {}}
-
-    l1_node = ltm["tree"][l1]
-    children1 = l1_node.get("children", {}) if isinstance(l1_node, dict) else {}
-    l2_candidates = list(children1.keys()) if isinstance(children1, dict) else []
-    l2 = _llm_choose_or_create_node(level=2, question=question, parent_path=[l1], candidates=l2_candidates)
-    if not l2:
-        l2 = "通用"
-
-    # 确保二级节点存在
-    if not isinstance(l1_node.get("children", {}), dict):
-        l1_node["children"] = {}
-    if l2 not in l1_node["children"]:
-        l1_node["children"][l2] = {"content": "", "question_type": None, "children": {}}
-
-    l3 = _llm_generate_entry_title(question=question, parent_path=[l1, l2])
-    if not l3:
-        l3 = "条目"
-
-    return [l1, l2, l3]
-
-
-def update_ltm(
+def exact_search_in_category(
     ltm: dict[str, Any],
     question: str,
-    answer: str,
+    question_type: str,
+) -> list[dict[str, str]]:
+    """在指定类别做精确匹配（规范化后字符串相等）。"""
+    qt = (question_type or "").strip().upper()
+    if qt not in QUESTION_TYPES_16:
+        return []
+    target = _normalize_text(question)
+    if not target:
+        return []
+    rows = ((ltm or {}).get("categories", {}) or {}).get(qt, [])
+    if not isinstance(rows, list):
+        return []
+    hits: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        q = str(row.get("question", "")).strip()
+        a = str(row.get("answer", "")).strip()
+        if q and a and _normalize_text(q) == target:
+            hits.append({"category": qt, "question": q, "answer": a})
+    return hits
+
+
+def exact_search_in_categories(
+    ltm: dict[str, Any],
+    question: str,
+    question_types: list[str] | None,
+) -> list[dict[str, str]]:
+    """在多个指定类别内做精确匹配（规范化后字符串相等）。"""
+    ordered_types: list[str] = []
+    for item in question_types or []:
+        qt = (item or "").strip().upper()
+        if qt in QUESTION_TYPES_16 and qt not in ordered_types:
+            ordered_types.append(qt)
+
+    hits: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for qt in ordered_types:
+        for row in exact_search_in_category(ltm, question, qt):
+            key = (row["category"], row["question"], row["answer"])
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(row)
+    return hits
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def vector_search_qa(
+    ltm: dict[str, Any],
+    question: str,
+    *,
+    top_k: int = 5,
     question_type: str | None = None,
-    topic_path: list[str] | None = None,
-    max_depth: int = 5,
-) -> str:
-    """
-    根据本轮问答更新 LTM（树形结构）。
-    
-    :param ltm: LTM 数据（包含 "tree" 键）
-    :param question: 问题文本
-    :param answer: 答案文本
-    :param question_type: 问题类型（若未传入则推断）
-    :param topic_path: 话题路径，如 ["数学类", "计算类"]，表示要添加到该路径下。
-                      若为 None，则调用 infer_topic_path_for_ltm 推断合适树形位置。
-    :param max_depth: 树的最大深度限制
-    :return: 本条目使用的问题类型
-    """
-    tree = ltm.setdefault("tree", {})
-    qt = question_type or infer_question_type_for_ltm(question)
-    
-    if topic_path is None:
-        # 固定三层：一级/二级/条目。逐层选择/创建。
-        topic_path = infer_topic_path_layered_3level(question, ltm)
-        logger.info("LTM 逐层推断路径(3层): %s", topic_path)
-    else:
-        # 外部传入路径时也强制裁剪到三层（不含根）
-        topic_path = topic_path[:MAX_LTM_DEPTH_EXCLUDING_ROOT]
-
-    # 限制深度（兼容旧参数，但实际固定为三层）
-    if len(topic_path) > min(max_depth, MAX_LTM_DEPTH_EXCLUDING_ROOT):
-        topic_path = topic_path[: min(max_depth, MAX_LTM_DEPTH_EXCLUDING_ROOT)]
-    
-    # 找到或创建目标路径的父节点
-    parent = tree
-    for i, key in enumerate(topic_path[:-1]):
-        if key not in parent:
-            parent[key] = {
-                "content": "",
-                "question_type": None,
-                "children": {},
-            }
-        parent = parent[key].get("children", {})
-        if not isinstance(parent, dict):
-            parent = {}
-    
-    # 创建或更新叶子节点
-    leaf_key = topic_path[-1]
-    # 若标题冲突，避免覆盖已有条目：自动追加后缀
-    if leaf_key in parent:
-        i = 2
-        new_key = f"{leaf_key}_{i}"
-        while new_key in parent and i < 50:
-            i += 1
-            new_key = f"{leaf_key}_{i}"
-        if new_key not in parent:
-            logger.info("LTM 条目标题冲突，改用新标题: %s -> %s", leaf_key, new_key)
-            leaf_key = new_key
-            topic_path = topic_path[:-1] + [leaf_key]
-
-    if leaf_key not in parent:
-        parent[leaf_key] = {
-            "content": f"问：{question}\n答：{answer}",
-            "question_type": qt,
-            "children": {},
+) -> list[dict[str, str]]:
+    """在全库或指定类别做向量检索。"""
+    rows = vector_search_qa_scored(
+        ltm,
+        question,
+        top_k=top_k,
+        question_type=question_type,
+        question_types=None,
+    )
+    return [
+        {
+            "category": str(row.get("category", "")),
+            "question": str(row.get("question", "")),
+            "answer": str(row.get("answer", "")),
         }
-        logger.info("LTM 新增节点 路径: %s", topic_path)
+        for row in rows
+    ]
+
+
+def vector_search_qa_scored(
+    ltm: dict[str, Any],
+    question: str,
+    *,
+    top_k: int = 5,
+    question_type: str | None = None,
+    question_types: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """优先基于预计算 embedding 索引做向量检索，并返回相似度分数。"""
+    q = (question or "").strip()
+    if not q:
+        return []
+
+    scoped_types: list[str] = []
+    if question_types:
+        for item in question_types:
+            qt = (item or "").strip().upper()
+            if qt in QUESTION_TYPES_16 and qt not in scoped_types:
+                scoped_types.append(qt)
+    elif question_type:
+        qt = question_type.strip().upper()
+        if qt in QUESTION_TYPES_16:
+            scoped_types = [qt]
+        else:
+            scoped_types = []
+    index_data = load_ltm_embeddings()
+    indexed_rows = index_data.get("entries", [])
+    if not isinstance(indexed_rows, list):
+        indexed_rows = []
+    if scoped_types:
+        indexed_rows = [
+            row for row in indexed_rows
+            if isinstance(row, dict) and row.get("category") in scoped_types
+        ]
+    elif question_types is not None or question_type:
+        indexed_rows = []
+
+    q_emb = get_embedding(q)
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    if indexed_rows:
+        logger.info(
+            "向量检索使用预计算 embedding 索引 scoped_types=%s candidates=%s",
+            scoped_types,
+            len(indexed_rows),
+        )
+        for row in indexed_rows:
+            embedding = row.get("embedding")
+            if not isinstance(embedding, list) or not embedding:
+                continue
+            scored.append((_cosine(q_emb, embedding), row))
     else:
-        # 若节点已存在，更新内容（追加或替换）
-        parent[leaf_key]["content"] = f"问：{question}\n答：{answer}"
-        parent[leaf_key]["question_type"] = qt
-        logger.info("LTM 更新节点 路径: %s", topic_path)
+        all_rows = get_all_qa_entries(ltm)
+        if scoped_types:
+            all_rows = [x for x in all_rows if x["category"] in scoped_types]
+        elif question_types is not None or question_type:
+            all_rows = []
+        if not all_rows:
+            logger.warning("向量检索无可用候选：embedding 索引为空且 LTM 范围内无条目 scoped_types=%s", scoped_types)
+            return []
+        logger.warning(
+            "向量检索回退到在线 embedding 计算 scoped_types=%s candidates=%s",
+            scoped_types,
+            len(all_rows),
+        )
+        for row in all_rows:
+            text = build_embedding_text(row["question"], row["answer"])
+            emb = get_embedding(text)
+            scored.append((_cosine(q_emb, emb), row))
 
-    return qt
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_rows = [
+        {
+            "category": str(row["category"]),
+            "question": str(row["question"]),
+            "answer": str(row["answer"]),
+            "similarity": score,
+        }
+        for score, row in scored[: max(1, top_k)]
+    ]
+    logger.info(
+        "向量检索 top_hits=%s",
+        [
+            {
+                "category": row["category"],
+                "similarity": round(float(row["similarity"]), 4),
+                "question_preview": row["question"].replace("\n", " ")[:100],
+            }
+            for row in top_rows[: min(3, len(top_rows))]
+        ],
+    )
+    return top_rows
 
 
-def get_all_concepts(ltm: dict[str, Any]) -> list[dict[str, Any]]:
-    """
-    从树形 LTM 中提取所有叶子节点（有实际内容的条目）为扁平列表。
-    用于兼容性：某些地方可能需要扁平列表格式。
-    """
-    concepts = []
-    
-    def traverse(node: dict[str, Any], path: list[str] = []) -> None:
-        content = node.get("content", "").strip()
-        if content and node.get("question_type"):
-            concepts.append({
-                "id": "-".join(path) if path else "root",
-                "topic": "/".join(path) if path else "root",
-                "content": content,
-                "question_type": node.get("question_type"),
-            })
-        children = node.get("children", {})
-        for key, child in children.items():
-            traverse(child, path + [key])
-    
-    tree = ltm.get("tree", {})
-    for key, node in tree.items():
-        traverse(node, [key])
-    
-    return concepts
+def format_qa_context(rows: list[dict[str, str]]) -> str:
+    """将检索条目格式化为 LLM 上下文。"""
+    if not rows:
+        return "（知识库暂无匹配）"
+    chunks = []
+    for row in rows:
+        chunks.append(
+            f"[{row['category']}]\nQuestion: {row['question']}\nAnswer: {row['answer']}"
+        )
+    return "\n\n".join(chunks)

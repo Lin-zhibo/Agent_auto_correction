@@ -1,34 +1,118 @@
 # -*- coding: utf-8 -*-
 """Meta-Knowledge (MK)：策略控制中心，从 MK 数据按问题类型选择 Agent、控制循环、决策是否继续。"""
 
-import random
 from typing import Any
 
+from agents.expert_agents.factory import ExpertAgentFactory
+from agents.general_agents.factory import GeneralAgentFactory
 from config import MK_JUDGE_MODEL
+from mab_algorithms import MAB_ALGORITHM, select_agents_by_mab
 from memory.mk_memory import get_config_for_question_type, infer_question_type, load_mk
 from utils.llm import llm_call, semantic_similarity
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 全部可选 Agent 名称（与 AgentFactory 一致）
-ALL_AGENT_NAMES = [
-    "questioner",
-    "logic_analyzer",
-    "authority_checker",
-    "explainer",
-    "economics_expert",
-    "math_expert",
-    "philosophy_expert",
-    "science_expert",
-    "critic",
-    "supporter",
-    "clarity_checker",
-    "completeness_checker",
-    "evidence_checker",
-    "brevity_advisor",
-    "audience_advisor",
-]
+# 全部可选通用 Agent 名称（专家 Agent 按 question_type 唯一映射）
+ALL_AGENT_NAMES = GeneralAgentFactory.all_names()
+GENERAL_AGENT_WHITELISTS: dict[str, list[str]] = {
+    "TEXT_WRITING": [
+        "clarity_editor",
+        "fluency_editor",
+        "relevancy_checker",
+        "brevity_advisor",
+    ],
+    "SUMMARIZATION": [
+        "relevancy_checker",
+        "completeness_checker",
+        "brevity_advisor",
+        "clarity_editor",
+    ],
+    "CODE_DEVELOPMENT": [
+        "logic_checker",
+        "completeness_checker",
+        "consistency_checker",
+        "relevancy_checker",
+    ],
+    "KNOWLEDGE_QA": [
+        "evidence_checker",
+        "clarity_editor",
+        "consistency_checker",
+        "relevancy_checker",
+    ],
+    "EDUCATIONAL_TUTORING": [
+        "clarity_editor",
+        "completeness_checker",
+        "logic_checker",
+        "fluency_editor",
+    ],
+    "TRANSLATION_LOCALIZATION": [
+        "fluency_editor",
+        "consistency_checker",
+        "relevancy_checker",
+        "clarity_editor",
+    ],
+    "CREATIVE_IDEATION": [
+        "relevancy_checker",
+        "clarity_editor",
+        "fluency_editor",
+        "brevity_advisor",
+    ],
+    "DATA_PROCESSING": [
+        "completeness_checker",
+        "logic_checker",
+        "consistency_checker",
+        "relevancy_checker",
+    ],
+    "ROLE_PLAYING": [
+        "relevancy_checker",
+        "consistency_checker",
+        "fluency_editor",
+        "harmlessness_checker",
+    ],
+    "CAREER_BUSINESS": [
+        "relevancy_checker",
+        "clarity_editor",
+        "compliance_checker",
+        "evidence_checker",
+    ],
+    "LIFE_EMOTIONAL": [
+        "harmlessness_checker",
+        "compliance_checker",
+        "fluency_editor",
+        "relevancy_checker",
+    ],
+    "MARKETING_COPYWRITING": [
+        "relevancy_checker",
+        "fluency_editor",
+        "clarity_editor",
+        "compliance_checker",
+    ],
+    "LOGICAL_REASONING": [
+        "logic_checker",
+        "consistency_checker",
+        "completeness_checker",
+        "relevancy_checker",
+    ],
+    "MATH_COMPUTATION": [
+        "logic_checker",
+        "completeness_checker",
+        "consistency_checker",
+        "relevancy_checker",
+    ],
+    "MULTIMODAL": [
+        "relevancy_checker",
+        "clarity_editor",
+        "completeness_checker",
+        "harmlessness_checker",
+    ],
+    "OTHER_GENERAL_Q": [
+        "relevancy_checker",
+        "clarity_editor",
+        "consistency_checker",
+        "evidence_checker",
+    ],
+}
 
 
 class MetaKnowledge:
@@ -38,7 +122,7 @@ class MetaKnowledge:
         self.mk = mk if mk is not None else load_mk()
         self._current_config: dict[str, Any] = {}
         self._current_question_type: str = ""
-        self._last_random_agent: str | None = None
+        self._last_general_agents: list[str] = []
 
     def _ensure_config(self, question: str | None = None, question_type: str | None = None) -> None:
         """
@@ -53,6 +137,12 @@ class MetaKnowledge:
             return
         self._current_config = get_config_for_question_type(self.mk, self._current_question_type)
 
+    def _get_candidate_general_agents(self) -> list[str]:
+        candidates = GENERAL_AGENT_WHITELISTS.get(self._current_question_type, ALL_AGENT_NAMES)
+        valid_names = set(ALL_AGENT_NAMES)
+        filtered = [name for name in candidates if name in valid_names]
+        return filtered or ALL_AGENT_NAMES
+
     def select_agents(
         self,
         question: str,
@@ -61,33 +151,35 @@ class MetaKnowledge:
         question_type: str | None = None,
     ) -> list[str]:
         """
-        按 MK 中当前问题类型的 agent_priorities 选出优先级最高的 3 个 Agent，
-        再在未入选的 Agent 中随机加入 1 个，共返回 4 个。
-        随机加入的 Agent 会记录在 _last_random_agent，若最终结果好可用于 MK 进化。
+        Use the configured MAB algorithm to select 3 general agents, then
+        add 1 question-type expert agent.
         """
         self._ensure_config(question=question, question_type=question_type)
-        agent_priorities = self._current_config.get("agent_priorities", {})
-
-        # 按 MK 优先级排序，取前 3 个（保证始终有 3 个）
-        sorted_by_priority = sorted(
-            ALL_AGENT_NAMES,
-            key=lambda a: agent_priorities.get(a, 0),
-            reverse=True,
+        candidate_general_agents = self._get_candidate_general_agents()
+        general_three, mab_scores = select_agents_by_mab(
+            candidate_general_agents,
+            self._current_config.get("agent_mab_stats", {}),
+            k=3,
+            algo=MAB_ALGORITHM,
         )
-        mk_three = sorted_by_priority[:3]
+        expert = ExpertAgentFactory.create_by_question_type(self._current_question_type)
+        expert_name = expert.agent_name
+        self._last_general_agents = list(general_three)
+        selected = general_three + [expert_name]
+        logger.info(
+            "MK 选 Agent: %s (question_type=%s, expert=%s, mab=%s, candidate_generals=%s, scores=%s)",
+            selected,
+            self._current_question_type,
+            expert_name,
+            MAB_ALGORITHM,
+            candidate_general_agents,
+            mab_scores,
+        )
+        return selected
 
-        # 在未入选的 Agent 中随机选一个（保证共 4 个）
-        remaining = [a for a in ALL_AGENT_NAMES if a not in mk_three]
-        self._last_random_agent = None
-        if remaining:
-            self._last_random_agent = random.choice(remaining)
-            mk_three = mk_three + [self._last_random_agent]
-        logger.info("MK 选 Agent: %s (随机加入: %s)", mk_three, self._last_random_agent)
-        return mk_three
-
-    def get_last_random_agent(self) -> str | None:
-        """返回本轮 select_agents 中随机加入的那个 Agent 名称，用于结果好时参与 MK 进化。"""
-        return self._last_random_agent
+    def get_last_general_agents(self) -> list[str]:
+        """Return the last round of general agents selected by MAB."""
+        return list(self._last_general_agents)
 
     def should_continue(
         self,
@@ -100,9 +192,13 @@ class MetaKnowledge:
     ) -> bool:
         """
         判定是否继续下一轮反思循环。
-        - 至少进行两次循环（loop_count < 2 时一定继续）。
-        - 之后：与「首答」「上一轮回答」做一致性判断；若与上一轮几乎无变化或相对首答无继续变好趋势，则结束。
-        - when round 1, new_answer is another answer.
+        约定：该函数在每一轮结束后调用，loop_count 为当前轮结束前的计数（首轮后为 0）。
+        规则：
+        - 若双向蕴含通过（语义基本等价），停止；
+        - 若达到最大轮数，停止；
+        - 若相对上一轮改动过小（高相似度）或 improvement_score 低于 improvement_min，停止；
+        - 若相对首答无继续变好趋势，停止；
+        - 否则继续下一轮。
         """
         
         if not self._current_config:
@@ -110,24 +206,20 @@ class MetaKnowledge:
         strategy = self._current_config.get("strategy", {})
         max_loops = int(strategy.get("max_loops", 3))
         similarity_threshold = float(strategy.get("similarity_threshold", 0.9))
+        improvement_min = float(strategy.get("improvement_min", 0.05))
 
-        # 至少进行两次循环
-        if loop_count < 2:
-            if self.is_bientail(prev_answer, new_answer):
-                logger.info("should_continue 结束原因: 双向蕴含 (bidirectional entailment) 检测PASS，停止循环")
-                return False
-            if loop_count >= max_loops:
-                logger.info("should_continue 结束原因: 达到设置的最高轮数 max_loops=%s (当前 loop_count=%s)", max_loops, loop_count)
-                return False
-            logger.info("should_continue 继续: 未满最小轮数 2 (当前 loop_count=%s)", loop_count)
-            return True
+        if self.is_bientail(prev_answer, new_answer):
+            logger.info("should_continue 结束原因: 双向蕴含 (bidirectional entailment) 检测PASS，停止循环")
+            return False
 
-        if loop_count >= max_loops:
+        # 当前轮结束后累计轮数
+        next_loop_count = loop_count + 1
+        if next_loop_count >= max_loops:
             logger.info("should_continue 结束原因: 达到设置的最高轮数 max_loops=%s (当前 loop_count=%s)", max_loops, loop_count)
             return False
 
-        # 与上一轮回答的一致性：若几乎不变则认为优化完毕
-        sim_new_prev = semantic_similarity(new_answer, prev_answer)
+        # 与上一轮回答的一致性：复用外部已算好的 improvement_score，避免重复算 embedding
+        sim_new_prev = max(0.0, min(1.0, 1.0 - improvement_score))
         if sim_new_prev > similarity_threshold:
             logger.info(
                 "should_continue 结束原因: 改动过小 (与上一轮相似度 %.3f > 阈值 %.3f，设置的最高轮数 max_loops=%s)",
@@ -135,8 +227,15 @@ class MetaKnowledge:
             )
             return False
 
-        # 与首答的一致性趋势：若相对上一轮没有继续变好（相对首答更一致），则不再继续
-        if initial_answer and initial_answer.strip():
+        if improvement_score < improvement_min:
+            logger.info(
+                "should_continue 结束原因: 改进不足 (improvement_score=%.3f < improvement_min=%.3f，max_loops=%s)",
+                improvement_score, improvement_min, max_loops,
+            )
+            return False
+
+        # 与首答的一致性趋势：从第 2 轮结束后开始判断，避免第 1 轮时 prev==initial 导致必停
+        if loop_count >= 1 and initial_answer and initial_answer.strip():
             sim_new_initial = semantic_similarity(new_answer, initial_answer)
             sim_prev_initial = semantic_similarity(prev_answer, initial_answer)
             if sim_new_initial <= sim_prev_initial:
@@ -145,7 +244,10 @@ class MetaKnowledge:
                     sim_new_initial, sim_prev_initial, max_loops,
                 )
                 return False
-        logger.info("should_continue 继续: 未达结束条件 (sim_new_prev=%.3f，阈值=%.3f，max_loops=%s)", sim_new_prev, similarity_threshold, max_loops)
+        logger.info(
+            "should_continue 继续: 满足继续条件 (sim_new_prev=%.3f，阈值=%.3f，improvement_score=%.3f，improvement_min=%.3f，max_loops=%s)",
+            sim_new_prev, similarity_threshold, improvement_score, improvement_min, max_loops
+        )
         return True
     
     def is_bientail(

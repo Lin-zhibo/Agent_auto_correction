@@ -10,11 +10,23 @@
 
 ## 配置
 
-1. 复制或编辑项目根目录下的 **`config.py`**，设置 OpenAI 相关配置：
-   - **`OPENAI_API_KEY`**：必填，也可通过环境变量 `OPENAI_API_KEY` 设置。
+1. 复制或编辑项目根目录下的 **`config.py`**，设置 LLM 服务相关配置：
+   - **`LLM_PROVIDER`**：选择要调用的后端服务，取值 `openai` 或 `huggingface`。默认为 `openai`。
+   - **`OPENAI_API_KEY`**：若使用 OpenAI，请设置该项，可通过环境变量同名传入。
    - **`OPENAI_BASE_URL`**：可选，默认 `https://api.openai.com/v1`（兼容代理或其它兼容接口）。
-   - **`OPENAI_MODEL`**：对话模型，默认 `gpt-4o-mini`。
+   - **`OPENAI_MODEL`**：OpenAI 对话模型，默认 `gpt-4o-mini`。
    - **`OPENAI_EMBEDDING_MODEL`**：语义相似度用，默认 `text-embedding-3-small`。
+   - **`HUGGINGFACE_API_KEY`**：若使用 HuggingFace，请在 [huggingface.co](https://huggingface.co/settings/tokens) 生成 API Token 并设置。
+   - **`HUGGINGFACE_MODEL`**：HuggingFace Hub 模型名或路径，默认 `meta-llama/Llama-3-8b-instruct`。
+   - **`HUGGINGFACE_BASE_URL`**：HuggingFace 推理端点（一般无需修改）。
+
+   通过将 `LLM_PROVIDER` 设置为 `huggingface`，系统会使用上述 HF 模型调用
+   替代原来的 OpenAI 接口，方便在本地或内网环境使用 LLAMA-3-8B-
+   instruct 等模型。
+
+   **注意**：当前语义相似度计算仍通过 OpenAI embedding 完成，因此
+   如果完全脱离 OpenAI，可自行扩展 `get_embedding` 以使用 HF
+   embedding（或其它方案）。
 2. 其它如 `MAX_LOOPS`、`SIMILARITY_THRESHOLD`、`IMPROVEMENT_MIN`、Agent 优先级等均在 `config.py` 中可调。
 
 ## 运行

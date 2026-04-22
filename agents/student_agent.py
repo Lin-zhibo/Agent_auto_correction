@@ -1,187 +1,499 @@
 # -*- coding: utf-8 -*-
-"""
-Student Agent：按顺序完成
-  1) 在 LTM 的 RAG 中按问题逐层检索（LTM 内部由 LLM 根据问题选节点）
-  2) 根据检索到的 LTM 信息作答
-  返回答案与问题类型（问题类型由 LLM 输出或 MK 规则兜底，供主流程选 Agent 与策略）。
-"""
+"""Student Agent：候选类别内向量检索 + 生成回答 + 迭代修订。"""
 
+import re
 from typing import Any
 
-from memory.mk_memory import infer_question_type
+from memory.ltm import (
+    format_qa_context,
+    infer_question_type_for_ltm,
+    infer_question_types_for_ltm,
+    vector_search_qa_scored,
+)
 from utils.llm import llm_call, semantic_similarity
 from utils.logger import get_logger
 from utils.parse_llm_json import parse_llm_output_to_dict
 
 logger = get_logger(__name__)
 
+STUDENT_TOP_CATEGORY_COUNT = 2
+STUDENT_VECTOR_TOP_K = 6
+STUDENT_MIN_SIMILARITY = 0.55
+STUDENT_STRICT_FALLBACK_SIMILARITY = 0.82
+STUDENT_USE_LTM_RETRIEVAL = False
+
 
 def _parse_answer_json(raw: str) -> str:
-    """
-    从 LLM 回复中解析出 answer 字段。
-    使用 utils 的 parse_llm_output_to_dict 转成字典后 .get("answer") 提取。
-    """
     obj = parse_llm_output_to_dict(raw or "")
     if obj is not None:
-        return (obj.get("answer") or "").strip()
-    return (raw or "").strip()
+        ans = obj.get("answer")
+        return str(ans or "").strip()
+    return str(raw or "").strip()
 
 
-def _parse_answer_and_question_type(
-    raw: str, question: str, mk: dict[str, Any] | None
-) -> tuple[str, str]:
-    """
-    从 LLM 回复中解析出 answer 与 question_type。
-    使用 parse_llm_output_to_dict 转成字典后 .get("answer")、.get("question_type") 提取；
-    若 question_type 不在 MK 的 question_types 中则用 infer_question_type 兜底。
-    """
-    from config import DEFAULT_QUESTION_TYPE
-
-    default_type = DEFAULT_QUESTION_TYPE if not mk else (mk.get("default_type") or DEFAULT_QUESTION_TYPE)
-    if not (raw and raw.strip()):
-        return "", infer_question_type(question, mk) if (question and mk) else default_type
-    obj = parse_llm_output_to_dict(raw)
+def _parse_accept_json(raw: str) -> tuple[bool | None, str]:
+    obj = parse_llm_output_to_dict(raw or "")
     if obj is None:
-        return _parse_answer_json(raw), infer_question_type(question, mk) if (question and mk) else default_type
-    answer = (obj.get("answer") or "").strip() or _parse_answer_json(raw)
-    qt = (obj.get("question_type") or "").strip()
-    types = (mk or {}).get("question_types", {})
-    if qt and qt in types:
-        return answer, qt
-    return answer, infer_question_type(question, mk) if (question and mk) else (qt or default_type)
+        return None, ""
+    accept = obj.get("accept_candidate")
+    reason = str(obj.get("reason") or "").strip()
+    if isinstance(accept, bool):
+        return accept, reason
+    return None, reason
+
+
+def _is_low_information_answer(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean:
+        return True
+    words = re.findall(r"\S+", clean)
+    return len(clean) <= 40 or len(words) <= 8
+
+
+def _has_reasoning_markers(text: str) -> bool:
+    clean = str(text or "").lower()
+    markers = [
+        "=",
+        "therefore",
+        "thus",
+        "so ",
+        "because",
+        "first",
+        "then",
+        "finally",
+        "calculate",
+        "calculation",
+        "steps",
+        "因此",
+        "所以",
+        "先",
+        "然后",
+        "最后",
+        "计算",
+        "步骤",
+    ]
+    return any(marker in clean for marker in markers)
+
+
+def _has_uncertainty_or_speculation(text: str) -> bool:
+    clean = str(text or "").lower()
+    markers = [
+        "may ",
+        "might ",
+        "maybe",
+        "possibly",
+        "perhaps",
+        "at least",
+        "at most",
+        "cannot determine",
+        "can't determine",
+        "without further information",
+        "without more information",
+        "depends",
+        "assume",
+        "assuming",
+        "可能",
+        "也许",
+        "或许",
+        "无法确定",
+        "取决于",
+        "假设",
+    ]
+    return any(marker in clean for marker in markers)
+
+
+def _reviewer_guidance_signals_issue(text: str) -> bool:
+    clean = str(text or "").lower()
+    markers = [
+        "incorrect",
+        "incomplete",
+        "wrong",
+        "missing",
+        "does not",
+        "lack",
+        "recalculate",
+        "logic jump",
+        "逻辑跳跃",
+        "缺证据",
+        "不正确",
+        "错误",
+        "缺少",
+        "重新计算",
+    ]
+    return any(marker in clean for marker in markers)
+
+
+def _extract_last_number(text: str) -> str:
+    nums = re.findall(r"-?\d+(?:\.\d+)?%?", str(text or ""))
+    return nums[-1] if nums else ""
+
+
+def _fallback_accept_candidate(
+    current_answer: str,
+    candidate_answer: str,
+    reviewer_guidance: str,
+) -> tuple[bool | None, str]:
+    current_low_info = _is_low_information_answer(current_answer)
+    candidate_reasoned = _has_reasoning_markers(candidate_answer)
+    candidate_risky = _has_uncertainty_or_speculation(candidate_answer)
+    guidance_signals_issue = _reviewer_guidance_signals_issue(reviewer_guidance)
+    same_final_number = False
+    current_last_num = _extract_last_number(current_answer)
+    candidate_last_num = _extract_last_number(candidate_answer)
+    if current_last_num and candidate_last_num and current_last_num == candidate_last_num:
+        same_final_number = True
+
+    if candidate_risky:
+        return False, "fallback: 候选包含明显不确定或推测表达，保留当前答案。"
+
+    if same_final_number and current_low_info:
+        return False, "fallback: 候选主要是在展开相同结论，保留更简洁的当前答案。"
+
+    if current_low_info and candidate_reasoned and guidance_signals_issue:
+        return True, "fallback: 主验收解析失败，但当前答案信息过少且反馈显示存在问题，接受更完整的候选答案。"
+
+    if current_low_info and candidate_reasoned and len(candidate_answer) >= max(80, len(current_answer) * 3):
+        return True, "fallback: 主验收解析失败，当前答案过短，候选提供了更完整且更直接的解答。"
+
+    return None, ""
+
+
+def _parse_applicability_results(raw: str) -> dict[int, tuple[bool, str]]:
+    obj = parse_llm_output_to_dict(raw or "")
+    if not isinstance(obj, dict):
+        return {}
+    results = obj.get("results")
+    if not isinstance(results, list):
+        return {}
+
+    out: dict[int, tuple[bool, str]] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        applicable = item.get("applicable")
+        reason = str(item.get("reason") or "").strip()
+        if isinstance(idx, int) and isinstance(applicable, bool):
+            out[idx] = (applicable, reason)
+    return out
+
+
+def _filter_applicable_rows(question: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    candidate_blocks = []
+    for idx, row in enumerate(rows):
+        candidate_blocks.append(
+            "\n".join(
+                [
+                    f"Index: {idx}",
+                    f"Category: {row.get('category', '')}",
+                    f"Similarity: {float(row.get('similarity', 0.0)):.4f}",
+                    f"Stored Question: {row.get('question', '')}",
+                    f"Stored Answer: {row.get('answer', '')}",
+                ]
+            )
+        )
+
+    prompt = """
+You are a strict retrieval applicability judge.
+Decide whether each retrieved QA memory can be safely used as direct support for answering the current question.
+
+Keep a memory only if it is truly applicable to the same task, constraints, and answer target.
+Reject memories that are only topically similar, partially related, or likely to bias the answer.
+
+Current question:
+{question}
+
+Candidate memories:
+{candidate_memories}
+
+Return JSON only:
+{{
+  "results": [
+    {{"index": 0, "applicable": true, "reason": "short reason"}}
+  ]
+}}
+""".strip().format(
+        question=question,
+        candidate_memories="\n\n".join(candidate_blocks),
+    )
+    raw = llm_call(
+        prompt,
+        system_prompt="You are a strict retrieval filter. Return valid JSON only.",
+    )
+    applicability = _parse_applicability_results(raw)
+    if not applicability:
+        fallback_rows = [
+            row
+            for row in rows
+            if float(row.get("similarity", 0.0)) >= STUDENT_STRICT_FALLBACK_SIMILARITY
+        ]
+        logger.warning(
+            "Student 适用性判断解析失败，回退高阈值过滤 fallback_hits=%s",
+            len(fallback_rows),
+        )
+        return fallback_rows
+
+    kept_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        applicable, reason = applicability.get(idx, (False, "missing_result"))
+        logger.info(
+            "Student 适用性判断 idx=%s applicable=%s similarity=%.4f reason=%s",
+            idx,
+            applicable,
+            float(row.get("similarity", 0.0)),
+            reason,
+        )
+        if applicable:
+            kept_rows.append(row)
+    return kept_rows
 
 
 class StudentAgent:
-    """负责：LTM RAG 检索（按问题逐层检索）→ 基于 LTM 生成初答；并评估回答的置信度与一致性。"""
+    """负责：候选类别内检索后生成初答，并在循环中根据反馈修订答案。"""
 
-    def __init__(self, rag_search):
-        self.rag_search = rag_search
-
-    def answer(self, question: str, ltm: dict[str, Any], mk: dict[str, Any]) -> tuple[str, str]:
-        """
-        按步骤生成初答：
-        1. 在 LTM 的 RAG 中按问题逐层检索（RAG 内部由 LLM 根据问题选节点，不依赖问题类型）
-        2. 根据检索到的 LTM 信息进行回答
-        返回 (答案, 问题类型)；问题类型由 LLM 在作答时一并输出（须为 MK 中类型之一），供主流程选 Agent 与策略。
-        """
-        # Step 1: 在 LTM 的 RAG 中按问题检索（传入问题，LTM 内部 LLM 逐层选节点）
-        retrieved_knowledge = self.rag_search.search(question, ltm)
-        logger.info("Student RAG 检索完成，检索内容长度=%s 字", len(retrieved_knowledge or ""))
-        logger.info("Student RAG 检索内容(全文): %s", retrieved_knowledge)
-
-        # Step 2: 根据 LTM 信息进行回答（LLM 同时输出答案与问题类型）
-        types = mk.get("question_types", {})
-        type_descriptions = "\n".join(
-            f"- {k}: {v.get('description', k)}" for k, v in types.items()
-        ) if types else "- general: 通用问题"
-        prompt = '''
-The following is the relevant knowledge retrieved from long-term memory:
-
+    def answer(
+        self,
+        question: str,
+        ltm: dict[str, Any],
+        mk: dict[str, Any],
+    ) -> tuple[str, str, list[str]]:
+        candidate_question_types = infer_question_types_for_ltm(
+            question,
+            top_n=STUDENT_TOP_CATEGORY_COUNT,
+        )
+        question_type = candidate_question_types[0] if candidate_question_types else infer_question_type_for_ltm(question)
+        if STUDENT_USE_LTM_RETRIEVAL:
+            retrieved_rows = vector_search_qa_scored(
+                ltm,
+                question,
+                top_k=STUDENT_VECTOR_TOP_K,
+                question_types=candidate_question_types,
+            )
+            threshold_rows = [
+                row
+                for row in retrieved_rows
+                if float(row.get("similarity", 0.0)) >= STUDENT_MIN_SIMILARITY
+            ]
+            applicable_rows = _filter_applicable_rows(question, threshold_rows)
+            retrieved_knowledge = format_qa_context(applicable_rows)
+            raw_categories = [x.get("category", "") for x in retrieved_rows]
+            kept_categories = [x.get("category", "") for x in applicable_rows]
+            logger.info(
+                (
+                    "Student 检索完成 primary_question_type=%s candidate_question_types=%s "
+                    "raw_hits=%s threshold_hits=%s applicable_hits=%s raw_categories=%s kept_categories=%s"
+                ),
+                question_type,
+                candidate_question_types,
+                len(retrieved_rows),
+                len(threshold_rows),
+                len(applicable_rows),
+                raw_categories,
+                kept_categories,
+            )
+            logger.info(
+                "Student 检索相似度 raw=%s threshold=%.2f",
+                [round(float(x.get("similarity", 0.0)), 4) for x in retrieved_rows],
+                STUDENT_MIN_SIMILARITY,
+            )
+        else:
+            retrieved_rows = []
+            threshold_rows = []
+            applicable_rows = []
+            retrieved_knowledge = "（Student 侧已禁用 LTM 检索，仅基于自身能力作答）"
+            logger.info(
+                "Student LTM 检索已禁用 primary_question_type=%s candidate_question_types=%s",
+                question_type,
+                candidate_question_types,
+            )
+        prompt = """
+The following are retrieved QA memories:
 {retrieved_knowledge}
 
-Please answer the question strictly based on the above knowledge. If the knowledge does not cover the question, answer truthfully using your own capabilities, without needing to reference the above knowledge.
+Use a retrieved memory only when it is directly applicable to the current question.
+If retrieved memories are insufficient or not directly applicable, answer with your own capability, but remain rigorous.
+Do not copy a retrieved answer if the task, constraints, or answer target do not fully match.
 
-Only output the main body of your answer, without prefixes like "Based on the above knowledge..." or any extra explanations.
+Only output JSON:
+{{
+  "answer": "your answer"
+}}
 
 Question: {question}
-
-Please output in the format strictly as below (only output this JSON, no other text):
-
-{{
-
-    "answer": "The answer to the question",
-
-    "question_type": "Question type"
-
-}}
-
-Where question_type must be selected as the most appropriate one from below:
-
-{type_descriptions}
-
-'''.format(retrieved_knowledge=retrieved_knowledge, question=question, type_descriptions=type_descriptions)
+""".strip().format(retrieved_knowledge=retrieved_knowledge, question=question)
         raw = self.generate_response(prompt)
-        answer, question_type = _parse_answer_and_question_type(raw, question, mk)
-        logger.info("Student 初答完成 question_type=%s 答案长度=%s", question_type, len(answer or ""))
-        return answer, question_type
+        answer = _parse_answer_json(raw)
+        logger.info(
+            "Student 初答完成 question_type=%s candidate_question_types=%s 答案长度=%s",
+            question_type,
+            candidate_question_types,
+            len(answer or ""),
+        )
+        return answer, question_type, candidate_question_types
 
     def generate_response(self, text: str) -> str:
-        """调用大模型生成回复。"""
         return llm_call(text)
 
-    def revise_answer(self, question: str, current_answer: str, organized_feedback: str) -> str:
-        """
-        根据 Insight 整理后的反馈意见，结合当前答案再次回答，生成改进后的答案。
-        供反思循环中使用（不参考 LTM，仅基于当前答案与多 Agent 反馈）。
-        """
-        prompt = '''
-You are a high-performance, strict assistant whose job is to revise or optimize an existing answer given user feedback. Follow these rules exactly.
+    def revise_answer(
+        self,
+        question: str,
+        current_answer: str,
+        organized_feedback: str,
+        *,
+        stage: str = "standard",
+        canonical_answer: str = "",
+    ) -> str:
+        stage = (stage or "standard").strip().lower()
+        canonical_answer = (canonical_answer or "").strip()
+        if stage == "expert_alignment":
+            stage_instruction = """
+You are in Stage 1: expert alignment.
 
-INPUT VARIABLES (do not change these names, counts, or braces):
+Use only the provided expert guidance to correct the answer.
+Your job is to fix factual errors, calculations, units, constraints, and the final conclusion.
+Do not perform stylistic polishing beyond what is necessary to make the answer correct and direct.
+The expert guidance should be treated as a grading-style diagnosis of which steps are wrong and how those steps should be corrected.
+Do not copy or invent a full standard solution that was not explicitly provided in the feedback.
+Prefer direct correction over paraphrasing.
+""".strip()
+        elif stage == "general_polish":
+            stage_instruction = """
+You are in Stage 2: general polish.
 
-* {question}
-* {current_answer}
-* {organized_feedback}
+Treat the current answer as already aligned to the expert conclusion.
+Do not change the final conclusion, core facts, key numbers, units, or task constraints.
+Use the feedback only to improve clarity, organization, completeness of explanation, and wording.
+If a canonical answer reference is provided, preserve consistency with it.
+Reject any edit that changes the factual conclusion or introduces a new calculation path.
+""".strip()
+        else:
+            stage_instruction = """
+Your goal is to improve the answer conservatively.
+Keep correct parts of the current answer unless the feedback clearly shows they should change.
+Do not introduce new assumptions, external facts, edge cases, or speculative content unless they are required by the question.
+If the feedback is weak, conflicting, or not clearly actionable, stay close to the current answer.
+Prefer minimal edits that fix the highest-priority issues first.
+The revised answer must still answer the original question directly.
+""".strip()
 
-HARD CONSTRAINTS (mandatory):
+        prompt = """
+You revise an answer using reviewer feedback.
 
-1. Preserve the three variables exactly as named above. You must not add, remove, rename, or reorder any of them. Treat them as immutable input placeholders.
-2. Default output language: **English**. Only use a different language if the {question} explicitly contains a directive in natural language of the form `Output language: <language>` (for example, `Output language: Chinese`). If that directive appears, obey it; otherwise produce English output.
-3. Output **only** raw JSON text and nothing else. The output must be a single JSON object with exactly this shape (no extra keys, no surrounding text, no code fences, no Markdown):
+{stage_instruction}
 
+Question:
+{question}
+
+Current answer:
+{current_answer}
+
+Canonical answer reference:
+{canonical_answer}
+
+Feedback:
+{organized_feedback}
+
+Return JSON only:
 {{
-"answer": "<full rewritten/optimized answer text>"
+  "answer": "revised answer"
 }}
-
-4. Do not include line breaks, commentary, diagnostics, or metadata outside the JSON object. The value of `"answer"` may contain multiple paragraphs and examples, but the overall output must still be a single valid JSON object.
-5. If you cannot comply with any rule, still return the single JSON object; set `"answer"` to a short explanatory message describing why you cannot comply (keep message concise, factual, and in the chosen language).
-
-BEHAVIORAL RULES (what to do):
-
-1. Primary goal: **Rewrite or optimize** `{current_answer}` **in-place** so it (a) preserves the original meaning, (b) reads more rigorously, (c) is logically clearer, and (d) adds short, concrete examples or clarifications **only when** they materially improve comprehension.
-2. Treat `{organized_feedback}` as advisory — integrate applicable points into the revision. However, you are allowed to retain your own expert judgment (i.e., you may **not** be forced to follow feedback verbatim). If you diverge from any item in `{organized_feedback}`, explicitly incorporate a brief parenthetical note into the rewritten answer saying you chose a different approach and why.
-3. Do not introduce new top-level sections or modify the three input variable names. You may reorder sentences inside the answer, add short examples, add numbered steps, and improve precision of terms, but you must not append new metadata blocks or change the template.
-4. Keep style: professional, precise, and direct. Prefer numbered lists for steps, short definitions for technical terms at first use, and concise examples illustrating edge cases or typical inputs/outputs where helpful.
-5. Length target: produce an answer that is as short as possible while fully addressing the feedback — prefer clarity over verbosity. If a longer explanation is necessary, provide a short summary first (1–2 sentences), then the expanded content.
-
-TECHNICAL RULES FOR JSON VALIDITY:
-
-1. The JSON must be valid UTF-8. Escape only characters required by JSON rules.
-2. Do not output trailing commas. Use double quotes for strings.
-3. If the rewritten answer contains quotation marks or line breaks, ensure they are properly encoded inside the JSON string.
-
-EXAMPLES OF ACCEPTABLE `"answer"` CONTENT (for your internal guidance only — do not output these examples):
-
-* A concise rewritten paragraph with 1–2 short bullet examples embedded.
-* A short numbered procedure (1., 2., 3.) that resolves ambiguity in the original answer.
-* If diverging from `{organized_feedback}`, append a parenthetical: `(Note: I retained X because...)`.
-
-ERROR/REFUSAL HANDLING:
-
-* If the inputs are malformed (e.g., missing one of the three variables), return:
-  {{
-  "answer": "Cannot comply: input missing required variable(s): list them."
-  }}
-* If a security or policy constraint prevents fulfilling the request, return a compliant JSON with a concise reason.
-
-FINAL ACTION (what you must output now):
-
-* Produce the rewritten/optimized answer **only** in the required JSON format above.
-* Do not include any additional commentary, analysis, or metadata outside the JSON.
-
----
-
-**If you believe your previous answer '{current_answer}' was correct, it is permissible to maintain your opinion.**
-
-'''.format(question=question, current_answer=current_answer, organized_feedback=organized_feedback)
-        logger.info("Student revise_answer 输入指导长度=%s 字", len(organized_feedback or ""))
+""".strip().format(
+            stage_instruction=stage_instruction,
+            question=question,
+            current_answer=current_answer,
+            canonical_answer=canonical_answer or "N/A",
+            organized_feedback=organized_feedback,
+        )
         raw = self.generate_response(prompt)
         obj = parse_llm_output_to_dict(raw)
         if obj is not None and obj.get("answer") is not None:
-            out = (obj.get("answer") or "").strip()
-            logger.info("Student revise_answer 输出长度=%s (全文): %s", len(out), out)
+            out = str(obj.get("answer") or "").strip()
+            logger.info("Student revise_answer 输出长度=%s", len(out))
             return out
         return _parse_answer_json(raw) if raw else ""
+
+    def choose_better_answer(
+        self,
+        question: str,
+        current_answer: str,
+        candidate_answer: str,
+        reviewer_guidance: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        current_clean = (current_answer or "").strip()
+        candidate_clean = (candidate_answer or "").strip()
+        if not candidate_clean:
+            return current_clean, {
+                "accepted": False,
+                "reason": "候选答案为空，保留当前答案。",
+            }
+        if candidate_clean == current_clean:
+            return current_clean, {
+                "accepted": False,
+                "reason": "候选答案与当前答案相同，无需替换。",
+            }
+
+        prompt = """
+You are a conservative answer-quality judge.
+Compare the current answer and a revised candidate for the same question.
+
+Decision rule:
+Accept the candidate only if it is clearly better overall.
+If the candidate is only stylistically different, more verbose, speculative, or not clearly better, reject it.
+Reject the candidate if it introduces unsupported assumptions, new risks, or drifts away from the question.
+
+Focus on:
+1. whether the answer directly addresses the question
+2. factual and logical consistency
+3. whether the candidate resolves important reviewer concerns
+4. whether the candidate introduces new problems
+
+Question:
+{question}
+
+Current answer:
+{current_answer}
+
+Candidate answer:
+{candidate_answer}
+
+Reviewer guidance:
+{reviewer_guidance}
+
+Return JSON only:
+{{
+  "accept_candidate": true,
+  "reason": "short explanation"
+}}
+""".strip().format(
+            question=question,
+            current_answer=current_clean,
+            candidate_answer=candidate_clean,
+            reviewer_guidance=reviewer_guidance or "N/A",
+        )
+        raw = self.generate_response(prompt)
+        accept, reason = _parse_accept_json(raw)
+        if accept is None:
+            accept, fallback_reason = _fallback_accept_candidate(
+                current_clean,
+                candidate_clean,
+                reviewer_guidance,
+            )
+            if accept is None:
+                accept = False
+                reason = reason or "候选答案验收结果无法解析，默认保留当前答案。"
+            else:
+                reason = fallback_reason
+        chosen = candidate_clean if accept else current_clean
+        logger.info(
+            "Student choose_better_answer accepted=%s reason=%s chosen_length=%s",
+            accept,
+            reason,
+            len(chosen),
+        )
+        return chosen, {"accepted": accept, "reason": reason}
 
     def evaluate_answer(
         self,
@@ -191,40 +503,10 @@ FINAL ACTION (what you must output now):
         initial_answer: str | None = None,
         previous_answer: str | None = None,
     ) -> tuple[float, float]:
-        """
-        评估回答的置信度与一致性。
-        - 首次循环（未传 initial_answer / previous_answer）：仅参考 LTM 计算一致性，用于选 Agent。
-        - 后续循环：不参考 LTM，与「首答」和「上一轮回答」做一致性；一致性高表示改动小。
-        :return: (confidence, consistency_score)
-        """
         if initial_answer is None and previous_answer is None:
-            # 首次循环：只参考 LTM，不做“与前面回答”的一致性判断
-            consistency_score = self._consistency_with_ltm(answer, ltm)
+            consistency_score = 0.5
         else:
-            # 后续循环：与前面回答做一致性（与上一轮回答的相似度，高则表示改动小）
             ref = previous_answer if previous_answer else initial_answer
             consistency_score = semantic_similarity(answer, ref) if ref else 0.5
         confidence = 0.5 + 0.5 * consistency_score
         return confidence, consistency_score
-
-    def _consistency_with_ltm(self, answer: str, ltm: dict[str, Any]) -> float:
-        """计算回答与 LTM 知识的一致性（语义相似度），仅用于首次循环。"""
-        def extract_all_content(tree: dict[str, Any]) -> str:
-            contents = []
-            if isinstance(tree, dict):
-                content = tree.get("content", "").strip()
-                if content:
-                    contents.append(content)
-                children = tree.get("children", {})
-                if isinstance(children, dict):
-                    for child in children.values():
-                        contents.append(extract_all_content(child))
-            return " ".join(contents)
-
-        tree = ltm.get("tree", {})
-        if not tree:
-            return 0.5
-        all_knowledge = extract_all_content(tree)
-        if not all_knowledge.strip():
-            return 0.5
-        return semantic_similarity(answer, all_knowledge)

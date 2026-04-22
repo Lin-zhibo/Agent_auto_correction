@@ -1,34 +1,64 @@
 # -*- coding: utf-8 -*-
-"""Memory 系统：LTM、WM、MK Memory 与 RAG 检索。"""
+"""Memory 系统：固定分类 LTM、WM 与 MK Memory。"""
 
-from memory.ltm import load_ltm, save_ltm, update_ltm
+from memory.ltm import (
+    QUESTION_TYPES_16,
+    build_embedding_text,
+    build_ltm_embeddings,
+    empty_ltm,
+    empty_ltm_embeddings,
+    exact_search_in_categories,
+    exact_search_in_category,
+    format_qa_context,
+    get_all_qa_entries,
+    infer_question_type_for_ltm,
+    infer_question_types_for_ltm,
+    load_ltm_embeddings,
+    load_ltm,
+    save_ltm_embeddings,
+    save_ltm,
+    vector_search_qa,
+    vector_search_qa_scored,
+)
 from memory.wm import create_wm, update_wm
-from memory.rag_search import KnowledgeNode, RAGSearch, build_knowledge_tree
 from memory.mk_memory import (
     load_mk,
     save_mk,
     infer_question_type,
     get_config_for_question_type,
     update_mk_from_ltm,
+    update_agent_mab_stats,
     evolve_mk_from_random_agent,
     select_better_agents_from_wm,
     evolve_mk_from_better_agents,
 )
 
 __all__ = [
+    "QUESTION_TYPES_16",
+    "empty_ltm_embeddings",
+    "empty_ltm",
     "load_ltm",
+    "load_ltm_embeddings",
     "save_ltm",
-    "update_ltm",
+    "save_ltm_embeddings",
+    "build_ltm_embeddings",
+    "build_embedding_text",
+    "infer_question_type_for_ltm",
+    "infer_question_types_for_ltm",
+    "get_all_qa_entries",
+    "exact_search_in_category",
+    "exact_search_in_categories",
+    "vector_search_qa",
+    "vector_search_qa_scored",
+    "format_qa_context",
     "create_wm",
     "update_wm",
-    "KnowledgeNode",
-    "RAGSearch",
-    "build_knowledge_tree",
     "load_mk",
     "save_mk",
     "infer_question_type",
     "get_config_for_question_type",
     "update_mk_from_ltm",
+    "update_agent_mab_stats",
     "evolve_mk_from_random_agent",
     "select_better_agents_from_wm",
     "evolve_mk_from_better_agents",

@@ -22,3 +22,5 @@ env/
 *.swo
 
 /cfg
+
+config*

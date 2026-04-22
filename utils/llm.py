@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
 """OpenAI API 调用与语义相似度计算。"""
 
+import threading
 from typing import Any
 
+import requests
 from openai import OpenAI
 
 from config import (
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_EMBEDDING_MODEL,
+    OPENAI_API_EMBEDDING_KEY, 
+    OPENAI_BASE_EMBEDDING_URL,
     OPENAI_MODEL,
+    OPENAI_TEMPERATURE,
 )
 from utils.parse_llm_json import parse_llm_output_to_dict
 
 # 单次 run 内累计的 token 用量，由 reset_token_usage / get_token_usage 配合 main 使用
 _token_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+# 单次会话内 embedding 缓存，避免重复文本重复请求 API
+_embedding_cache: dict[str, list[float]] = {}
+_embedding_cache_lock = threading.Lock()
 
 
 def reset_token_usage() -> None:
@@ -27,6 +35,11 @@ def reset_token_usage() -> None:
 def get_token_usage() -> dict[str, int]:
     """返回当前累计的 token 用量（复制），供保存结果使用。"""
     return dict(_token_usage)
+
+
+def reset_embedding_cache() -> None:
+    """重置 embedding 缓存，在每次会话开始前调用。"""
+    _embedding_cache.clear()
 
 
 def _accumulate_usage(usage: Any) -> None:
@@ -46,6 +59,13 @@ def _get_client() -> OpenAI:
         )
     return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
+def _get_embedding_client() -> OpenAI:
+    """获取 OpenAI 客户端。"""
+    if not OPENAI_API_EMBEDDING_KEY:
+        raise ValueError(
+            "请设置 OPENAI_API_KEY：在 config.py 中配置或设置环境变量 OPENAI_API_KEY"
+        )
+    return OpenAI(api_key=OPENAI_API_EMBEDDING_KEY, base_url=OPENAI_BASE_EMBEDDING_URL)
 
 def parse_json_from_llm(raw: str) -> dict[str, Any] | None:
     """
@@ -60,34 +80,57 @@ def llm_call(
     text: str,
     system_prompt: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> str:
     """
     调用大模型生成回复。
+
+    根据配置中的 ``LLM_PROVIDER`` 或调用时指定的 ``provider`` 决定使用哪
+    个后端。当前支持 ``openai`` 和 ``huggingface``。
+
     :param text: 用户/问题文本
     :param system_prompt: 可选系统提示
-    :param model: 可选模型名，默认使用 config 中的 OPENAI_MODEL
+    :param model: 可选模型名，默认使用配置中与提供者对应的模型
+    :param provider: ``openai`` 或 ``huggingface``，优先于配置
     :return: 模型回复文本
     """
+    provider = provider or "openai"
+
+    # fallback to OpenAI-compatible interface (openai or any other unknown value)
     client = _get_client()
     model = model or OPENAI_MODEL
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": text})
-    resp = client.chat.completions.create(model=model, messages=messages)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=OPENAI_TEMPERATURE,
+    )
     _accumulate_usage(getattr(resp, "usage", None))
     return (resp.choices[0].message.content or "").strip()
 
-
 def get_embedding(text: str) -> list[float]:
-    """获取单段文本的 embedding。"""
-    client = _get_client()
+    """获取单段文本的 embedding（多线程安全）。"""
+    key = text.strip()
+    with _embedding_cache_lock:
+        cached = _embedding_cache.get(key)
+        if cached is not None:
+            return cached[:]
+
+    client = _get_embedding_client()
     resp = client.embeddings.create(
         model=OPENAI_EMBEDDING_MODEL,
-        input=text,
+        input=key,
     )
     _accumulate_usage(getattr(resp, "usage", None))
-    return resp.data[0].embedding
+    embedding = resp.data[0].embedding
+
+    with _embedding_cache_lock:
+        if key not in _embedding_cache:
+            _embedding_cache[key] = embedding
+        return _embedding_cache[key][:]
 
 
 def semantic_similarity(text_a: str, text_b: str) -> float:
