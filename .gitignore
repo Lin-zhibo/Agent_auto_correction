@@ -24,3 +24,5 @@ env/
 /cfg
 
 config*
+
+data/ltm_*
